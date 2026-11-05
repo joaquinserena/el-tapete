@@ -410,6 +410,40 @@ class Pocha {
     this.startHand();
   }
 
+  // ---------- tiempo máximo por decisión ----------
+  timerInfo() {
+    if (['auction', 'chooseTrump', 'bidding', 'playing'].includes(this.phase)) return { seats: [this.turn], ms: 10000 };
+    if (this.phase === 'handEnd') {
+      return { seats: Array.from({ length: this.n }, (_, i) => i).filter((s) => !this.ready.has(s)), ms: 25000 };
+    }
+    return null;
+  }
+
+  // Lo que se juega solo si se acaba el tiempo
+  autoAct(seat) {
+    switch (this.phase) {
+      case 'auction': return this.auctionPass(seat);
+      case 'chooseTrump': {
+        const count = {};
+        for (const c of this.hands[seat]) count[c.s] = (count[c.s] || 0) + 1;
+        const suit = SUITS.slice().sort((a, b) => (count[b] || 0) - (count[a] || 0))[0];
+        return this.chooseTrump(seat, suit);
+      }
+      case 'bidding': {
+        const v = seat === this.lastBidder() && this.forbiddenBid() === 0 ? 1 : 0;
+        return this.bid(seat, v);
+      }
+      case 'playing': {
+        if (this.handType === 'indio') return this.play(seat, 'hidden');
+        const legal = this.legalCards(seat).slice().sort((a, b) =>
+          (a.s === this.trump) - (b.s === this.trump) || POWER[a.r] - POWER[b.r]);
+        return this.play(seat, legal[0].id);
+      }
+      case 'handEnd': return this.setReady(seat);
+      default: return undefined;
+    }
+  }
+
   isFinished() { return this.phase === 'finished'; }
 
   winners() {

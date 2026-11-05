@@ -158,9 +158,34 @@
   socket.on('connect_error', () => { if (loggedIn) $('#conn').classList.remove('hidden'); });
   socket.on('lobby', (l) => { lobby = l; if (screen === 'menu') renderMenu(); });
   socket.on('kicked', () => { room = null; toast('El anfitrión te ha sacado de la sala'); show('menu'); });
+  // Sonidos según lo que cambia en la mesa
+  function soundsFor(prev, r) {
+    const a = prev && prev.view;
+    const b = r.view;
+    if (!b || !a || prev.id !== r.id) return;
+    const me = r.mySeat;
+    if (b.turn === me && a.turn !== me && !['draw'].includes(b.phase)) Sound.play('turn');
+    if (b.game === 'pocha' && (b.trick || []).length > (a.trick || []).length) Sound.play('card');
+    if (b.game === 'mus') {
+      (b.said || []).forEach((s, i) => {
+        if (!s || s === (a.said || [])[i]) return;
+        if (/Órdago/.test(s)) Sound.play('ordago');
+        else if (/Envido|más/.test(s)) Sound.play('chip');
+        else if (/Quiero/.test(s)) Sound.play('chip');
+      });
+    }
+    if (b.phase === 'finished' && a.phase !== 'finished') {
+      const won = b.summary && b.summary.winners.includes(b.game === 'mus' ? me % 2 : me);
+      Sound.play(won ? 'win' : 'lose');
+    }
+  }
+
   socket.on('room', (r) => {
     const prevPhase = room && room.view && room.view.phase;
     const sameRoom = room && room.id === r.id;
+    soundsFor(room, r);
+    timerState = r.timer ? { seats: r.timer.seats, deadline: Date.now() + r.timer.remaining, total: r.timer.total } : null;
+    if (r.view && r.mySeat >= 0) checkDeal(r.view);
     room = r;
     if (r.view && r.view.phase !== prevPhase) { discardSel.clear(); overlayHiddenFor = null; }
     if (!r.view || r.view.turn !== r.mySeat) envidoVal = null;
@@ -388,13 +413,16 @@
       return;
     }
     if (v.game === 'pocha') renderPocha(v); else renderMus(v);
+    animateDealIn();
     renderOverlay(v);
+    updateTimers();
   }
 
   function seatEl(seat, n, extra = {}) {
     const p = room.players[seat];
     const pos = relPos(seat, n);
     const el = h('div', `seat pos-${pos}${extra.turn ? ' turn' : ''}${p && !p.connected ? ' offline' : ''}`);
+    el.dataset.seat = seat;
     let marks = '';
     if (extra.mark) marks = ` <span title="${esc(extra.markTitle || '')}">${extra.mark}</span>`;
     el.innerHTML = `
@@ -412,27 +440,126 @@
       if (extra.count > 6) el.querySelector('.tags').insertAdjacentHTML('beforeend', `<span class="tag-chip dark">${extra.count} cartas</span>`);
     }
     if (p && !p.connected) el.querySelector('.tags').insertAdjacentHTML('beforeend', '<span class="tag-chip dark">desconectado</span>');
+    if (timerState && timerState.total <= 10000 && timerState.seats.includes(seat)) {
+      el.querySelector('.who').insertAdjacentHTML('afterend', timerBar());
+    }
     const said = p && chatBubbleFor(p.id);
     if (said) el.appendChild(h('div', 'chat-bubble', esc(said)));
     $('#seats').appendChild(el);
     return el;
   }
 
-  // Sorteo con cartas (quién reparte en la pocha, parejas en el mus)
-  function renderDraw(d, finalHtml) {
-    const c = $('#center');
-    c.appendChild(h('div', 'pill', d.done ? '<b>¡Sorteo hecho!</b>' : 'Sorteo: se tiran cartas hasta que sale un <b>rey</b>…'));
-    const strip = h('div', 'draw-strip');
-    d.steps.forEach((s) => {
-      const p = room.players[s.seat];
-      const it = h('div', 'draw-step' + (s.card.r === 12 ? ' king' : ''));
-      it.appendChild(Cards.face(s.card));
-      it.insertAdjacentHTML('beforeend', `<span class="nm">${esc(p ? p.name : '')}</span>`);
-      strip.appendChild(it);
+  // ----- animaciones: cartas que salen del centro de la mesa hacia su sitio -----
+  function flyFromCenter(items) {
+    // items: [{ el, delay }]; se calcula la distancia al centro cuando ya están colocadas
+    requestAnimationFrame(() => {
+      const t = $('#table').getBoundingClientRect();
+      const cx = t.left + t.width / 2;
+      const cy = t.top + t.height * 0.44;
+      for (const { el, delay } of items) {
+        const r = el.getBoundingClientRect();
+        el.style.setProperty('--dx', `${cx - (r.left + r.width / 2)}px`);
+        el.style.setProperty('--dy', `${cy - (r.top + r.height / 2)}px`);
+        el.style.animationDelay = `${delay}ms`;
+        el.classList.add('fly');
+      }
     });
-    c.appendChild(strip);
-    if (d.done) c.appendChild(h('div', 'pill', finalHtml));
   }
+
+  // Reparto: cuando empieza una mano (o tras el descarte) las cartas vuelan una a una
+  let lastDealKey = null;
+  let dealStart = 0;
+  let dealPlan = { n: 4, cards: 4, mano: 0, stagger: 60 };
+  function dealKeyOf(v) {
+    if (v.game === 'pocha') {
+      return ['auction', 'bidding'].includes(v.phase) && v.bids.every((b) => b === null)
+        ? `p${v.handNumber}-${v.auction ? v.auction.redeals : 0}` : null;
+    }
+    return v.phase === 'mus' && Object.keys(v.said || {}).every((k) => !v.said[k]) ? `m${v.roundNumber}-${v.musRounds}` : null;
+  }
+  function checkDeal(v) {
+    const key = dealKeyOf(v);
+    if (!key || key === lastDealKey) return;
+    lastDealKey = key;
+    const n = v.game === 'pocha' ? v.n : 4;
+    const cards = v.game === 'pocha' ? v.cards : 4;
+    dealStart = Date.now();
+    dealPlan = { n, cards, mano: v.mano, stagger: Math.max(18, Math.min(70, 1100 / (n * cards))) };
+    Sound.deal(Math.min(n * cards, 24), dealPlan.stagger);
+  }
+  // Retraso de la carta k que recibe el asiento `seat`, descontando lo que ya ha pasado
+  function dealDelay(seat, k) {
+    const order = (seat - dealPlan.mano + dealPlan.n) % dealPlan.n;
+    return (k * dealPlan.n + order) * dealPlan.stagger - (Date.now() - dealStart);
+  }
+  const dealing = () => Date.now() - dealStart < dealPlan.n * dealPlan.cards * dealPlan.stagger + 400;
+  function animateDealIn() {
+    if (!dealing()) return;
+    const items = [];
+    $$('#my-hand .card').forEach((el, k) => items.push({ el, delay: dealDelay(room.mySeat, k) }));
+    $$('#seats .seat').forEach((seatDiv) => {
+      const s = Number(seatDiv.dataset.seat);
+      seatDiv.querySelectorAll('.backs .card, .revealed .card').forEach((el, k) => items.push({ el, delay: dealDelay(s, k) }));
+    });
+    flyFromCenter(items.filter((it) => it.delay > -350));
+  }
+
+  // Sorteo (quién reparte / parejas): cada carta va hacia el jugador al que le toca, con su nombre debajo
+  const PILE_POS = {
+    bottom: [50, 63], right: [73, 44], top: [50, 31], left: [27, 44], 'top-right': [67, 33], 'top-left': [33, 33],
+  };
+  let lastDrawCount = 0;
+  function renderDrawPiles(d, n) {
+    if (d.steps.length < lastDrawCount) lastDrawCount = 0;
+    const bySeat = {};
+    d.steps.forEach((st, i) => { (bySeat[st.seat] ||= []).push({ ...st, i }); });
+    const newest = d.steps.length - 1;
+    let flyEl = null;
+    for (const [seat, list] of Object.entries(bySeat)) {
+      const s = Number(seat);
+      const [x, y] = PILE_POS[relPos(s, n)];
+      const pile = h('div', 'draw-pile' + (list.some((st) => st.card.r === 12) ? ' got-king' : ''));
+      pile.style.left = `${x}%`;
+      pile.style.top = `${y}%`;
+      const stack = h('div', 'stack');
+      list.slice(-4).forEach((st) => {
+        const el = Cards.face(st.card, st.card.r === 12 ? 'king' : '');
+        if (st.i === newest && d.steps.length > lastDrawCount) flyEl = el;
+        stack.appendChild(el);
+      });
+      pile.appendChild(stack);
+      pile.appendChild(h('div', 'who-name', esc(pname(s))));
+      $('#seats').appendChild(pile);
+    }
+    if (flyEl) {
+      flyFromCenter([{ el: flyEl, delay: 0 }]);
+      Sound.play(d.steps[newest].card.r === 12 ? 'king' : 'card');
+    }
+    lastDrawCount = d.steps.length;
+  }
+
+  // ----- cuenta atrás -----
+  let timerState = null; // { seats, deadline, total }
+  const timerBar = () => '<div class="tbar"><div class="tfill"></div></div>';
+  function updateTimers() {
+    if (!timerState) return;
+    const left = Math.max(0, timerState.deadline - Date.now());
+    const frac = left / timerState.total;
+    const secs = Math.ceil(left / 1000);
+    $$('.tbar').forEach((b) => {
+      b.querySelector('.tfill').style.width = `${frac * 100}%`;
+      b.classList.toggle('warn', secs <= 5 && secs > 3);
+      b.classList.toggle('danger', secs <= 3);
+    });
+    $$('.tsec').forEach((e) => { e.textContent = `${secs}s`; });
+    $$('.my-timer').forEach((e) => e.classList.toggle('danger', secs <= 3));
+    const mine = room && timerState.seats.includes(room.mySeat) && timerState.total <= 10000;
+    if (mine && secs <= 3 && secs > 0 && secs !== updateTimers.lastTick) {
+      updateTimers.lastTick = secs;
+      Sound.play('tick');
+    }
+  }
+  setInterval(updateTimers, 200);
 
   function meTag(extra = {}) {
     const p = room.players[room.mySeat];
@@ -442,6 +569,13 @@
       ${extra.bubble ? `<span class="bubble${extra.hot ? ' hot' : ''}">${esc(extra.bubble)}</span>` : ''}`;
     const said = chatBubbleFor(p.id);
     if (said) row.appendChild(h('span', 'chat-bubble', esc(said)));
+    if (timerState && timerState.seats.includes(room.mySeat) && timerState.total <= 10000) {
+      const wrap = h('div', 'my-row');
+      wrap.appendChild(row);
+      wrap.appendChild(h('div', 'my-timer', `${timerBar()}<span class="tsec"></span>`));
+      wrap.style.flexDirection = 'column';
+      return wrap;
+    }
     return row;
   }
 
@@ -473,7 +607,7 @@
     const dis = isHost ? '' : 'disabled';
     if (room.game === 'mus') {
       settings = `
-        <div class="row">Puntos por juego <select id="set-puntos" ${dis}><option value="40" ${s.puntos == 40 ? 'selected' : ''}>40 (8 amarracos)</option><option value="30" ${s.puntos == 30 ? 'selected' : ''}>30 (6 amarracos)</option></select></div>
+        <div class="row">Puntos por juego <select id="set-puntos" ${dis}><option value="40" ${s.puntos == 40 ? 'selected' : ''}>40</option><option value="30" ${s.puntos == 30 ? 'selected' : ''}>30</option></select></div>
         <div class="row">Juegos para ganar <select id="set-juegos" ${dis}>${[1, 2, 3].map((j) => `<option value="${j}" ${s.juegos == j ? 'selected' : ''}>${j}</option>`).join('')}</select></div>
         <div class="row">Baraja <select id="set-reyes" ${dis}><option value="8" ${s.ochoReyes ? 'selected' : ''}>8 reyes (treses = reyes, doses = ases)</option><option value="4" ${!s.ochoReyes ? 'selected' : ''}>4 reyes</option></select></div>`;
     } else {
@@ -528,9 +662,11 @@
     const my = room.mySeat;
 
     if (v.phase === 'draw') {
-      $('#info').innerHTML = '<span class="pill">¿Quién reparte?</span>';
-      for (let s = 0; s < n; s++) if (s !== my) seatEl(s, n, { tags: [{ html: `${v.scores[s]} pts`, cls: 'dark' }] });
-      renderDraw(v.draw, `Reparte <b>${esc(pname(v.draw.dealer))}</b> · empieza pidiéndose <b>${esc(pname(v.draw.mano))}</b>`);
+      $('#info').innerHTML = v.draw.done
+        ? `<span class="pill">Reparte <b>${esc(pname(v.draw.dealer))}</b> · empieza <b>${esc(pname(v.draw.mano))}</b></span>`
+        : '<span class="pill">¿Quién reparte? El primero que saque rey</span>';
+      for (let s = 0; s < n; s++) if (s !== my) seatEl(s, n, {});
+      renderDrawPiles(v.draw, n);
       $('#controls').appendChild(meTag({}));
       return;
     }
@@ -541,6 +677,8 @@
     $('#info').innerHTML = `
       <span class="pill">Mano <b>${v.handNumber}</b>/${v.totalHands}${v.tiebreak ? ' (desempate)' : ''}</span>
       <span class="pill"><b>${handLabel(v.handType, v.cards)}</b>${v.handType === 'subasta' ? ` ${subastaN}/${n} · ${v.cards} cartas` : ''}</span>
+      ${v.phase === 'auction' && v.auction ? `<span class="pill">Mínimo <b>${v.auction.min}</b>${v.auction.reduced ? ' (el primero se lo queda)' : ''}</span>` : ''}
+      ${v.trump ? `<span class="pill">Triunfo <b>${SUIT_NAMES[v.trump]}</b></span>` : ''}
       ${v.phase === 'auction' || v.phase === 'chooseTrump' ? '' : `<span class="pill">Pedidas: <b>${bidSum}</b>/${v.cards}${allBid ? (bidSum > v.cards ? ' · sobran' : ' · faltan') : ''}</span>`}`;
 
     const A = v.auction;
@@ -565,25 +703,13 @@
       });
     }
 
-    // Centro: triunfo + baza
+    // Centro: solo la carta de triunfo y la baza
     const c = $('#center');
-    const tb = h('div', 'trump-box');
-    if (v.trumpCard) {
-      tb.appendChild(Cards.face(v.trumpCard));
-      tb.appendChild(h('div', '', `<div>Triunfo</div><b style="font-size:1.2rem">${SUIT_NAMES[v.trump]}</b>${v.trumpFromDealer ? `<div style="color:#ddd;font-size:.75rem">(la última de ${esc(pname(v.dealer))})</div>` : ''}`));
-    } else if (v.trump) {
-      tb.appendChild(h('div', 'big-suit', Cards.suitIcon(v.trump, 40)));
-      tb.appendChild(h('div', '', `<div>Triunfo</div><b style="font-size:1.2rem">${SUIT_NAMES[v.trump]}</b><div style="color:#ddd;font-size:.75rem">lo ha elegido ${esc(pname(v.auctionWinner))}</div>`));
-    } else {
-      tb.appendChild(h('div', '', '<div>Triunfo</div><b>lo elige quien gane la subasta</b>'));
-    }
-    c.appendChild(tb);
-    if (v.phase === 'auction' && A) {
-      let txt = A.reduced
-        ? `Nadie pujó: el primero que se pida <b>${A.min}</b> se lo queda`
-        : (A.highest === null ? `Subasta: mínimo <b>${A.min}</b> bazas` : `Va ganando <b>${esc(pname(A.highestSeat))}</b> con <b>${A.highest}</b>`);
-      if (A.redeals) txt += ` · repartido de nuevo (${A.redeals})`;
-      c.appendChild(h('div', 'pill', txt));
+    if (v.trump) {
+      const tb = h('div', 'trump-box');
+      tb.appendChild(v.trumpCard ? Cards.face(v.trumpCard) : h('div', 'big-suit', Cards.suitIcon(v.trump, 40)));
+      tb.title = `Triunfo: ${SUIT_NAMES[v.trump]}`;
+      c.appendChild(tb);
     }
     const ta = h('div', 'trick-area');
     v.trick.forEach((t) => {
@@ -594,7 +720,6 @@
       ta.appendChild(e);
     });
     c.appendChild(ta);
-    if (v.phase === 'trickDone') c.appendChild(h('div', 'pill', `Se lleva la baza <b>${esc(pname(v.trickWinner))}</b>`));
 
     // Mi zona
     const myTags = [];
@@ -678,21 +803,19 @@
     const myTeam = my % 2;
     const teamName = (t) => (t === myTeam ? 'Nosotros' : 'Ellos');
     if (v.phase === 'draw') {
-      $('#info').innerHTML = '<span class="pill">Sorteo de parejas</span>';
+      $('#info').innerHTML = v.draw.done
+        ? `<span class="pill">Parejas: <b>${esc(pname(1))} y ${esc(pname(3))}</b> contra <b>${esc(pname(0))} y ${esc(pname(2))}</b> · reparte ${esc(pname(0))}</span>`
+        : '<span class="pill">Sorteo de parejas: los dos primeros reyes van juntos</span>';
       for (let s = 0; s < 4; s++) if (s !== my) seatEl(s, 4, {});
-      // Tras el sorteo: asientos 1 y 3 son los del rey (1 es mano), 0 reparte
-      renderDraw(v.draw, `Parejas: <b>${esc(pname(1))} y ${esc(pname(3))}</b> contra <b>${esc(pname(0))} y ${esc(pname(2))}</b>.
-        Reparte ${esc(pname(0))}, es mano ${esc(pname(1))}`);
+      renderDrawPiles(v.draw, 4);
       $('#controls').appendChild(meTag({}));
       return;
     }
-    const coins = (n) => `<span class="coins">${'<span class="coin"></span>'.repeat(Math.min(8, Math.floor(n / 5)))}</span>`;
     const lanceIdx = v.lance ? LANCES.indexOf(v.lance === 'punto' ? 'juego' : v.lance) : -1;
     $('#info').innerHTML = `
       <div class="mus-score">
-        ${[myTeam, 1 - myTeam].map((t) => `<div class="team-score ${t === myTeam ? 'mine' : ''}">${teamName(t)} <b>${v.scores[t]}</b>${coins(v.scores[t])} <span title="Juegos">· ${v.juegos[t]} J</span></div>`).join('')}
-      </div>
-      <span class="pill">A ${v.settings.puntos} · ${v.settings.juegos} juego${v.settings.juegos > 1 ? 's' : ''}</span>`;
+        ${[myTeam, 1 - myTeam].map((t) => `<div class="team-score ${t === myTeam ? 'mine' : ''}">${teamName(t)} <b>${v.scores[t]}</b> <span title="Juegos">· ${v.juegos[t]} J</span></div>`).join('')}
+      </div>`;
 
     const reveal = v.hands && (v.phase === 'roundEnd' || v.phase === 'finished');
     for (let s = 0; s < 4; s++) {
@@ -715,37 +838,14 @@
       });
     }
 
-    // Centro
+    // Centro: solo la ronda en la que estamos, coloreada (y lo que hay en juego)
     const c = $('#center');
     const track = h('div', 'lance-track');
+    const stake = v.bet && v.bet.phase === 'envite' ? ` · ${v.bet.ordago ? '¡Órdago!' : v.bet.amount}` : '';
     track.innerHTML = (v.phase === 'mus' || v.phase === 'discard')
       ? `<span class="lance-step active">${v.phase === 'mus' ? 'Mus' : 'Descarte'}${v.musRounds ? ` (${v.musRounds + (v.phase === 'mus' ? 1 : 0)}ª)` : ''}</span>`
-      : LANCES.map((l, i) => `<span class="lance-step ${i === lanceIdx ? 'active' : i < lanceIdx ? 'done' : ''}">${l === 'juego' && v.lance === 'punto' ? 'Punto' : v.lanceNames[l]}</span>`).join('');
+      : LANCES.map((l, i) => `<span class="lance-step ${i === lanceIdx ? 'active' : i < lanceIdx ? 'done' : ''}">${l === 'juego' && v.lance === 'punto' ? 'Punto' : v.lanceNames[l]}${i === lanceIdx ? stake : ''}</span>`).join('');
     c.appendChild(track);
-    const deck = h('div', 'deck-stack');
-    deck.appendChild(Cards.back());
-    c.appendChild(deck);
-    if (v.bet) {
-      const b = v.bet;
-      let txt;
-      if (b.phase === 'open') txt = `A ${v.lanceNames[b.lance]}: nadie ha envidado`;
-      else if (b.ordago) txt = `¡Órdago a ${v.lanceNames[b.lance]} de ${teamName(b.bettorTeam)}!`;
-      else txt = `${teamName(b.bettorTeam)} envida <b>${b.amount}</b> a ${v.lanceNames[b.lance]}${b.prev > 1 ? ` (en juego ${b.prev})` : ''}`;
-      c.appendChild(h('div', 'pill', txt));
-    }
-    if (v.log.length && v.phase !== 'roundEnd') c.appendChild(h('div', 'pill', esc(v.log[v.log.length - 1])));
-    // Lances ya hablados
-    if (v.records.length && v.phase === 'lance') {
-      const desc = v.records.map((r) => {
-        const L = v.lanceNames[r.lance];
-        if (r.status === 'paso') return `${L}: en paso`;
-        if (r.status === 'querido') return `${L}: ${r.ordago ? 'órdago' : r.amount} querido`;
-        if (r.status === 'noquerido') return `${L}: no querido`;
-        if (r.status === 'sinApuesta') return `${L}: solo una pareja`;
-        return `${L}: nadie`;
-      }).join(' · ');
-      c.appendChild(h('div', 'pill', esc(desc)));
-    }
 
     // Mi zona
     const ctr = $('#controls');
@@ -759,35 +859,32 @@
       btn('Mus', 'primary', () => emit('action', { type: 'mus' }));
       btn('No hay mus', 'light', () => emit('action', { type: 'nomus' }));
     } else if (act.includes('discard')) {
-      ctr.appendChild(h('div', 'hint', 'Toca las cartas que quieres cambiar'));
       const b = btn(`Descartar (${discardSel.size})`, 'primary', () => {
         emit('action', { type: 'discard', cards: [...discardSel] });
       });
       b.disabled = discardSel.size === 0;
     } else if (act.includes('paso') || act.includes('quiero')) {
-      const L = v.lanceNames[v.bet.lance];
-      ctr.appendChild(h('div', 'hint', `Hablas a ${L}`));
-      if (act.includes('paso')) btn('Paso', 'light', () => emit('action', { type: 'paso' }));
+      const open = act.includes('paso');
+      if (open) btn('Paso', 'light', () => emit('action', { type: 'paso' }));
       if (act.includes('quiero')) {
         btn('Quiero', 'primary', () => emit('action', { type: 'quiero' }));
         btn('No quiero', 'light', () => emit('action', { type: 'noquiero' }));
       }
       if (act.includes('envido')) {
-        const open = act.includes('paso');
-        if (open) btn('Envido', 'primary', () => emit('action', { type: 'envido', value: 2 }));
-        const inp = h('input', 'num-input');
-        inp.type = 'number'; inp.min = 2; inp.max = 40; inp.value = envidoVal || (open ? 5 : 2);
-        inp.oninput = () => { envidoVal = inp.value; };
-        ctr.appendChild(inp);
-        btn(open ? 'Envido N' : 'N más', 'light', () => emit('action', { type: 'envido', value: Number(inp.value) }));
+        // Un solo botón de envidar: empieza en 2 (o en 1 si subes un envite) y se sube con +1 / +5
+        const min = open ? 2 : 1;
+        if (!envidoVal || envidoVal < min) envidoVal = min;
+        btn(open ? `Envido ${envidoVal}` : `Subo ${envidoVal}`, 'primary env-amount', () => {
+          const value = envidoVal;
+          envidoVal = null;
+          emit('action', { type: 'envido', value });
+        });
+        btn('+1', 'light', () => { envidoVal = Math.min(40, envidoVal + 1); renderRoom(); });
+        btn('+5', 'light', () => { envidoVal = Math.min(40, envidoVal + 5); renderRoom(); });
+        // Siempre presente (aunque desactivado) para que los botones no cambien de sitio
+        btn('↺', 'ghost', () => { envidoVal = min; renderRoom(); }).disabled = envidoVal <= min;
       }
       if (act.includes('ordago')) btn('¡Órdago!', 'danger', () => { if (confirm('¿Seguro que echas un órdago?')) emit('action', { type: 'ordago' }); });
-    } else if (v.phase === 'mus') {
-      ctr.appendChild(h('div', 'hint', `¿Mus? Habla ${esc(pname(v.turn))}…`));
-    } else if (v.phase === 'discard') {
-      ctr.appendChild(h('div', 'hint', 'Esperando a que descarten los demás…'));
-    } else if (v.phase === 'lance') {
-      ctr.appendChild(h('div', 'hint', `Habla ${esc(pname(v.turn))}…`));
     }
 
     const hand = $('#my-hand');
@@ -813,7 +910,7 @@
     const iAmReady = v.ready && v.ready.includes(my);
     const readyBtn = (label) => (iAmReady
       ? `<p class="muted">Esperando al resto (${v.ready.length}/${room.players.length})…</p>`
-      : `<button class="btn primary" id="btn-ready">${label}</button>`);
+      : `<button class="btn primary" id="btn-ready">${label} <span class="tsec"></span></button>`);
     const hideBtn = '<button class="btn light" id="btn-hide-ov">Ver la mesa</button>';
 
     if (v.phase === 'finished') {
@@ -837,9 +934,9 @@
         <div class="waiting-list">${room.players.map((p, s) => {
           const info = v.handInfo[s];
           const won = (v.lanceWinners || []).filter((w) => w.seat === s).map((w) => v.lanceNames[w.lance]);
-          return `<div class="waiting-player">${avatarHtml(p.avatar, 'sm')}<div><b>${esc(p.name)}</b> <span class="muted">${s % 2 === myTeam ? 'nosotros' : 'ellos'}</span>
-            <div class="muted">${info.pares || 'Sin pares'} · ${info.juego >= 31 ? 'juego ' + info.juego : 'punto ' + info.juego}${won.length ? ' · gana ' + won.join(', ') : ''}</div></div>
-            <span class="spacer"></span><div style="display:flex;gap:2px" class="mini-hand" data-seat="${s}"></div></div>`;
+          return `<div class="waiting-player end-row"><div class="top">${avatarHtml(p.avatar, 'sm')}<div><b>${esc(p.name)}</b> <span class="muted">${s % 2 === myTeam ? 'nosotros' : 'ellos'}</span>
+            <div class="muted">${info.pares || 'Sin pares'} · ${info.juego >= 31 ? 'juego ' + info.juego : 'punto ' + info.juego}${won.length ? ' · gana ' + won.join(', ') : ''}</div></div></div>
+            <div class="end-hand" data-seat="${s}"></div></div>`;
         }).join('')}</div>
         <ul class="breakdown">${v.breakdown.length ? v.breakdown.map((b) => `<li><span>${esc(b.reason)}</span><b>${tn(b.team)} +${b.points}</b></li>`).join('') : '<li>Sin piedras esta mano</li>'}</ul>
         <div class="row" style="justify-content:space-between"><span>Nosotros <b>${v.scores[myTeam]}</b> · Ellos <b>${v.scores[1 - myTeam]}</b></span><span>Juegos ${v.juegos[myTeam]}-${v.juegos[1 - myTeam]}</span></div>
@@ -858,9 +955,9 @@
     }
     ov.classList.remove('hidden');
     ov.innerHTML = html;
-    $$('#overlay .mini-hand').forEach((el) => {
+    $$('#overlay .end-hand').forEach((el) => {
       const s = Number(el.dataset.seat);
-      (v.hands[s] || []).forEach((c) => el.appendChild(Cards.face(c, 'mini')));
+      (v.hands[s] || []).forEach((c) => el.appendChild(Cards.face(c)));
     });
     const rb = $('#btn-ready');
     if (rb) rb.onclick = () => emit('action', { type: 'ready' });
@@ -913,6 +1010,21 @@
   }
 
   window.addEventListener('resize', () => { if (screen === 'room') renderRoom(); });
+
+  // ---------- sonido ----------
+  function renderSoundButtons() {
+    $$('.snd-music').forEach((b) => { b.textContent = '🎵'; b.style.opacity = Sound.prefs.music ? 1 : 0.45; b.title = Sound.prefs.music ? 'Quitar música' : 'Poner música'; });
+    $$('.snd-sfx').forEach((b) => { b.textContent = Sound.prefs.sfx ? '🔊' : '🔇'; b.title = Sound.prefs.sfx ? 'Quitar sonidos' : 'Poner sonidos'; });
+  }
+  $$('.snd-music').forEach((b) => { b.onclick = () => { Sound.setMusic(!Sound.prefs.music); renderSoundButtons(); }; });
+  $$('.snd-sfx').forEach((b) => { b.onclick = () => { Sound.setSfx(!Sound.prefs.sfx); renderSoundButtons(); }; });
+  renderSoundButtons();
+  // El audio solo puede empezar tras el primer toque; cada botón suena al pulsarlo
+  document.addEventListener('pointerdown', (e) => {
+    Sound.unlock();
+    if (e.target.closest('.btn, .avatar-opt, .color-opt, .known-opt, .tab, .me.clickable')) Sound.play('click');
+    else if (e.target.closest('.hand .card.playable')) Sound.play('card');
+  }, true);
   // Mantener despierto el servidor gratuito mientras alguien tenga la web abierta
   setInterval(() => { fetch('/ping').catch(() => {}); }, 4 * 60 * 1000);
 

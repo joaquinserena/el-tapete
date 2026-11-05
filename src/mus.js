@@ -330,8 +330,10 @@ class Mus {
     this.checkTurn(seat);
     const b = this.bet;
     if (b.ordago) throw new Error('Hay un órdago: quiero o no quiero');
-    let v = Math.floor(Number(value) || 2);
-    if (v < 2) v = 2;
+    // El primer envite es como mínimo de 2; para subir uno ajeno vale desde 1
+    const min = b.phase === 'open' ? 2 : 1;
+    let v = Math.floor(Number(value) || min);
+    if (v < min) v = min;
     if (v > 40) v = 40;
     if (b.phase === 'open') {
       b.prev = 1;
@@ -495,6 +497,28 @@ class Mus {
     if (this.drawShown < this.drawSteps.length) this.drawShown++;
     else this.startRound();
   }
+  // ---------- tiempo máximo por decisión ----------
+  timerInfo() {
+    if (this.phase === 'mus' || this.phase === 'lance') return { seats: [this.turn], ms: 10000 };
+    if (this.phase === 'discard') return { seats: [0, 1, 2, 3].filter((s) => !this.pendingDiscard[s]), ms: 10000 };
+    if (this.phase === 'roundEnd') return { seats: [0, 1, 2, 3].filter((s) => !this.ready.has(s)), ms: 25000 };
+    return null;
+  }
+
+  // Lo que se juega solo si se acaba el tiempo: corta el mus, tira la carta más baja, pasa o no quiere
+  autoAct(seat) {
+    switch (this.phase) {
+      case 'mus': return this.doMus(seat, false);
+      case 'discard': {
+        const h = this.hands[seat];
+        return this.doDiscard(seat, [h[h.length - 1].id]);
+      }
+      case 'lance': return this.bet.phase === 'open' ? this.doPaso(seat) : this.doNoQuiero(seat);
+      case 'roundEnd': return this.setReady(seat);
+      default: return undefined;
+    }
+  }
+
   isFinished() { return this.phase === 'finished'; }
 
   summary() {

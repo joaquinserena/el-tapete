@@ -36,6 +36,8 @@
         <div class="me clickable" id="menu-me" title="Editar nombre y avatar"></div>
         <div class="logo small">El Tapete</div>
         <div class="topbar-actions">
+          <button class="btn ghost snd-music" title="Música">🎵</button>
+          <button class="btn ghost snd-sfx" title="Sonidos">🔊</button>
           <button class="btn ghost" id="btn-stats">📊 Estadísticas</button>
         </div>
       </header>
@@ -88,6 +90,8 @@
           <button class="btn ghost small" id="btn-leave">← Menú</button>
           <div id="room-title" class="room-title"></div>
           <div class="table-head-right">
+            <button class="btn ghost small snd-music" title="Música">🎵</button>
+            <button class="btn ghost small snd-sfx" title="Sonidos">🔊</button>
             <button class="btn ghost small" id="btn-score" title="Marcador">📋</button>
             <button class="btn ghost small" id="btn-chat" title="Chat">💬 Chat<span id="chat-badge" class="badge hidden"></span></button>
           </div>
@@ -122,6 +126,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="sounds.js"></script>
   <script src="cards.js"></script>
   <script src="app.js"></script>
 </body>

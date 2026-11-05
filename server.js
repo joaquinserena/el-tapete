@@ -70,6 +70,9 @@ function roomView(room, pid) {
     players: room.players.map((p) => ({ id: p.id, name: p.name, avatar: p.avatar, connected: isConnected(p.id) })),
     mySeat: seat,
     view: room.engine ? room.engine.viewFor(seat) : null,
+    timer: room.timer && room.status === 'playing'
+      ? { seats: room.timer.seats, remaining: Math.max(0, room.timer.deadline - Date.now()), total: room.timer.total }
+      : null,
     chat: room.chat,
     lastSummary: room.lastSummary,
   };
@@ -107,7 +110,7 @@ function leaveRoom(pid) {
     // En partida (o viendo el resultado) no se quita el asiento: puede volver
     const present = room.players.filter((p) => sessions.get(p.id)?.roomId === room.id);
     if (present.length === 0) {
-      clearTimeout(room.tickTimer);
+      stopTimers(room);
       rooms.delete(room.id);
       broadcastLobby();
       return;
@@ -122,8 +125,8 @@ function leaveRoom(pid) {
   room.players = room.players.filter((p) => p.id !== pid);
   if (room.hostId === pid) room.hostId = room.players[0]?.id || null;
   if (room.players.length === 0) {
-    clearTimeout(room.tickTimer);
-    rooms.delete(room.id);
+    stopTimers(room);
+      rooms.delete(room.id);
   } else {
     systemMsg(room, `${s.name} ha salido de la sala`);
     broadcastRoom(room);
@@ -157,11 +160,48 @@ function afterAction(room) {
   if (d && !room.tickTimer) {
     room.tickTimer = setTimeout(() => {
       room.tickTimer = null;
+      room.actionCount = (room.actionCount || 0) + 1;
       eng.tick();
       afterAction(room);
     }, d);
   }
+  scheduleTurnTimer(room);
   broadcastRoom(room);
+}
+
+// Tiempo máximo para decidir: si se acaba, el servidor juega por ti (paso, no quiero, la carta más baja...)
+function scheduleTurnTimer(room) {
+  const eng = room.engine;
+  const t = room.status === 'playing' && eng && eng.timerInfo ? eng.timerInfo() : null;
+  if (!t || !t.seats.length) {
+    clearTimeout(room.turnTimer);
+    room.turnTimer = null;
+    room.timer = null;
+    room.timerKey = null;
+    return;
+  }
+  const key = `${eng.phase}|${t.seats.join(',')}|${room.actionCount || 0}`;
+  if (key === room.timerKey) return;
+  clearTimeout(room.turnTimer);
+  room.timerKey = key;
+  room.timer = { seats: t.seats, deadline: Date.now() + t.ms, total: t.ms };
+  room.turnTimer = setTimeout(() => {
+    if (room.timerKey !== key || room.engine !== eng) return;
+    for (const s of t.seats) {
+      try { eng.autoAct(s); } catch { /* ya no le tocaba */ }
+    }
+    room.actionCount = (room.actionCount || 0) + 1;
+    afterAction(room);
+  }, t.ms);
+}
+
+function stopTimers(room) {
+  clearTimeout(room.tickTimer);
+  clearTimeout(room.turnTimer);
+  room.tickTimer = null;
+  room.turnTimer = null;
+  room.timer = null;
+  room.timerKey = null;
 }
 
 function bump(map, key, won) {
@@ -363,8 +403,7 @@ io.on('connection', (socket) => {
   socket.on('cancelGame', wrap(() => {
     const room = hostRoom();
     if (room.status !== 'playing') throw new Error('No hay partida en curso');
-    clearTimeout(room.tickTimer);
-    room.tickTimer = null;
+    stopTimers(room);
     room.engine = null;
     room.status = 'waiting';
     systemMsg(room, 'El anfitrión ha cancelado la partida (no cuenta para las estadísticas)');
@@ -391,6 +430,7 @@ io.on('connection', (socket) => {
     const seat = seatOf(room, pidOf());
     if (seat < 0) throw new Error('No estás sentado en esta mesa');
     room.engine.act(seat, a);
+    room.actionCount = (room.actionCount || 0) + 1;
     afterAction(room);
   }));
 
@@ -435,7 +475,7 @@ setInterval(() => {
     } else if (!room.emptySince) {
       room.emptySince = now;
     } else if (now - room.emptySince > 30 * 60 * 1000) {
-      clearTimeout(room.tickTimer);
+      stopTimers(room);
       for (const p of room.players) {
         const s = sessions.get(p.id);
         if (s && s.roomId === room.id) s.roomId = null;

@@ -16,6 +16,12 @@ function simPocha(n) {
   let steps = 0;
   while (!g.isFinished()) {
     if (++steps > 200000) throw new Error('bucle infinito pocha');
+    const ti = g.timerInfo();
+    if (ti && Math.random() < 0.15) {
+      // Se acaba el tiempo: juega el servidor
+      for (const s of ti.seats) g.autoAct(s);
+      continue;
+    }
     if (g.phase === 'draw') {
       g.tick();
     } else if (g.phase === 'auction') {
@@ -77,6 +83,11 @@ function simMus(settings) {
   let steps = 0;
   while (!g.isFinished()) {
     if (++steps > 200000) throw new Error('bucle infinito mus');
+    const ti = g.timerInfo();
+    if (ti && Math.random() < 0.15) {
+      for (const s of ti.seats) g.autoAct(s);
+      continue;
+    }
     if (g.phase === 'draw') {
       g.tick();
       if (g.phase === 'mus') assert.strictEqual(g.mano, 1);
@@ -94,6 +105,14 @@ function simMus(settings) {
     } else if (g.phase === 'lance') {
       const acts = g.actionsFor(g.turn);
       const a = pick(acts.concat(acts.includes('ordago') && Math.random() < 0.9 ? acts.filter((x) => x !== 'ordago') : []));
+      if (a === 'envido' && g.bet.phase === 'envite') {
+        // Subir un envite ajeno: desde 1
+        const before = g.bet.amount;
+        g.act(g.turn, { type: 'envido', value: 1 });
+        assert.strictEqual(g.bet.amount, before + 1);
+        assert.strictEqual(g.bet.prev, before);
+        continue;
+      }
       g.act(g.turn, a === 'envido' ? { type: 'envido', value: 2 + Math.floor(Math.random() * 4) } : { type: a });
     } else if (g.phase === 'roundEnd') {
       for (let s = 0; s < 4; s++) g.act(s, { type: 'ready' });

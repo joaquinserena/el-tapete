@@ -40,3 +40,9 @@ El usuario escribe en español: responde en español.
   otra pareja (asiento 0) y el primero que sacó rey es mano. Sin señas. A 40 piedras, 3 juegos, 8 reyes por defecto.
 - "Derecha" = asiento siguiente; en pantalla el siguiente se dibuja a tu derecha (sentido antihorario).
 - Pruebas en local: `TAPETE_DEBUG_HAND=13` hace que la pocha empiece en esa mano (para ver subastas).
+- Tiempo por decisión: 10 s (25 s para "Siguiente mano"). Al acabarse, el servidor juega solo (`timerInfo`/`autoAct`
+  en cada motor): pocha pasa, pide 0 o tira la carta más baja; mus corta el mus, tira la peor carta, pasa o no quiere.
+- Mus: el primer envite es de mínimo 2 y para subir uno ajeno vale desde 1 (botones Envido/Subo con +1 y +5).
+- Cartas: dibujo propio en SVG (public/cards.js) con estilo de baraja española. No usar las ilustraciones de Fournier
+  (tienen derechos). Música y sonidos generados con Web Audio (public/sounds.js), sin archivos de audio.
+- Mesa: en el centro solo el lance/ronda coloreado (mus) o el triunfo y la baza (pocha). Sin monedas ni amarracos.
