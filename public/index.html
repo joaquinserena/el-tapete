@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#1f4f47">
+  <title>El Tapete · Mus y Pocha</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Entrada -->
+    <section id="screen-login" class="screen felt-page">
+      <div class="panel felt">
+        <h1 class="logo">El Tapete</h1>
+        <p class="subtitle">Mus y pocha con los amigos</p>
+        <label class="lbl" for="name-input">¿Quién eres?</label>
+        <input id="name-input" maxlength="20" placeholder="Tu nombre" autocomplete="off">
+        <div class="lbl">Elige tu avatar</div>
+        <div id="avatar-grid" class="avatar-grid"></div>
+        <div class="lbl">Color</div>
+        <div id="color-grid" class="color-grid"></div>
+        <button id="btn-enter" class="btn primary big">Entrar</button>
+        <p id="login-error" class="error"></p>
+      </div>
+    </section>
+
+    <!-- Menú -->
+    <section id="screen-menu" class="screen felt-page hidden">
+      <header class="topbar">
+        <div class="me" id="menu-me"></div>
+        <div class="logo small">El Tapete</div>
+        <div class="topbar-actions">
+          <button class="btn ghost" id="btn-stats">📊 Estadísticas</button>
+          <button class="btn ghost" id="btn-logout" title="Cambiar de jugador">✎</button>
+        </div>
+      </header>
+      <div id="rejoin-banner" class="banner hidden">
+        Tienes una partida en curso. <button class="btn primary" id="btn-rejoin">Volver a la mesa</button>
+      </div>
+      <h2 class="menu-title">¿A qué jugamos?</h2>
+      <div class="game-cards">
+        <div class="game-card" data-game="mus">
+          <div class="game-art" id="art-mus"></div>
+          <h3>Mus</h3>
+          <p>4 jugadores · por parejas</p>
+          <p class="game-status" id="status-mus"></p>
+          <button class="btn primary" data-join="mus">Jugar al mus</button>
+        </div>
+        <div class="game-card" data-game="pocha">
+          <div class="game-art" id="art-pocha"></div>
+          <h3>Pocha</h3>
+          <p>3, 4 o 5 jugadores</p>
+          <p class="game-status" id="status-pocha"></p>
+          <button class="btn primary" data-join="pocha">Jugar a la pocha</button>
+        </div>
+      </div>
+      <div class="join-code">
+        <input id="code-input" maxlength="4" placeholder="Código de sala">
+        <button class="btn ghost" id="btn-code">Entrar con código</button>
+      </div>
+      <p id="menu-error" class="error"></p>
+    </section>
+
+    <!-- Estadísticas -->
+    <section id="screen-stats" class="screen felt-page hidden">
+      <header class="topbar">
+        <button class="btn ghost" id="btn-stats-back">← Volver</button>
+        <div class="logo small">Estadísticas</div>
+        <div></div>
+      </header>
+      <div class="tabs">
+        <button class="tab active" data-tab="mus">Mus</button>
+        <button class="tab" data-tab="pocha">Pocha</button>
+        <button class="tab" data-tab="historial">Historial</button>
+      </div>
+      <div id="stats-body" class="stats-body"></div>
+    </section>
+
+    <!-- Mesa -->
+    <section id="screen-room" class="screen hidden">
+      <div id="table" class="table felt">
+        <div class="table-head">
+          <button class="btn ghost small" id="btn-leave">← Menú</button>
+          <div id="room-title" class="room-title"></div>
+          <div class="table-head-right">
+            <button class="btn ghost small" id="btn-score" title="Marcador">📋</button>
+            <button class="btn ghost small" id="btn-chat" title="Chat">💬<span id="chat-badge" class="badge hidden"></span></button>
+          </div>
+        </div>
+        <div id="seats"></div>
+        <div id="center" class="center"></div>
+        <div id="info" class="info"></div>
+        <div id="my-area" class="my-area">
+          <div id="my-hand" class="hand"></div>
+          <div id="controls" class="controls"></div>
+        </div>
+        <div class="brand">El Tapete</div>
+      </div>
+
+      <div id="chat-panel" class="side-panel hidden">
+        <div class="side-head">Chat <button class="btn ghost small" data-close="chat-panel">✕</button></div>
+        <div id="chat-list" class="chat-list"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" maxlength="200" placeholder="Escribe..." autocomplete="off">
+          <button class="btn primary small">Enviar</button>
+        </form>
+      </div>
+      <div id="score-panel" class="side-panel hidden">
+        <div class="side-head">Marcador <button class="btn ghost small" data-close="score-panel">✕</button></div>
+        <div id="score-body" class="score-body"></div>
+      </div>
+      <div id="overlay" class="overlay hidden"></div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="conn" class="conn hidden">Conectando con el servidor…</div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="cards.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
