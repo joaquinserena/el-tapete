@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 const { Storage } = require('./src/storage');
-const { Mus } = require('./src/mus');
+const { Mus, musDraw } = require('./src/mus');
 const { Pocha } = require('./src/pocha');
 
 const PORT = process.env.PORT || 3000;
@@ -14,12 +14,22 @@ const server = http.createServer(app);
 const io = new Server(server, { pingTimeout: 30000 });
 const storage = new Storage();
 
-app.use(express.static(path.join(__dirname, 'public')));
+// no-cache: el navegador comprueba siempre si hay versión nueva (tras cada publicación)
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 app.get('/ping', (req, res) => res.send('ok'));
+// Jugadores que han entrado alguna vez (para elegir "quién eres" con un toque)
+app.get('/api/players', (req, res) => {
+  const list = Object.values(storage.db.profiles)
+    .map((p) => ({ name: p.name, avatar: p.avatar, lastSeen: p.lastSeen || 0 }))
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+  res.json(list);
+});
 
 const GAMES = {
   mus: { name: 'Mus', min: 4, max: 4, Engine: Mus, defaults: { puntos: 40, juegos: 3, ochoReyes: true } },
-  pocha: { name: 'Pocha', min: 3, max: 5, Engine: Pocha, defaults: { modo: 'completa' } },
+  pocha: { name: 'Pocha', min: 3, max: 5, Engine: Pocha, defaults: {} },
 };
 
 const rooms = new Map(); // id -> room
@@ -197,6 +207,8 @@ function finishMatch(room) {
       st.mejorPuntuacion = st.mejorPuntuacion === null ? ps.puntos : Math.max(st.mejorPuntuacion, ps.puntos);
       st.peorPuntuacion = st.peorPuntuacion === null ? ps.puntos : Math.min(st.peorPuntuacion, ps.puntos);
       st.mejorRacha = Math.max(st.mejorRacha, ps.mejorRacha);
+      st.subastas += ps.subastas;
+      st.subastasCumplidas += ps.subastasCumplidas;
       names.forEach((n, o) => { if (o !== s) bump(st.rivales, n, rankOf[s] < rankOf[o]); });
     });
     detail = sum.ranking.map((r) => `${names[r.seat]} ${r.score}`).join(' · ');
@@ -331,7 +343,16 @@ io.on('connection', (socket) => {
     if (n < g.min || n > g.max) {
       throw new Error(g.min === g.max ? `${g.name}: hacen falta ${g.min} jugadores` : `${g.name}: hacen falta de ${g.min} a ${g.max} jugadores`);
     }
-    room.engine = new g.Engine(room.players.map((p) => ({ id: p.id, name: p.name })), room.settings);
+    let settings = room.settings;
+    if (room.game === 'mus') {
+      // Sorteo de parejas con reyes: recoloca los asientos
+      const d = musDraw();
+      room.players = d.order.map((i) => room.players[i]);
+      settings = { ...room.settings, mano: d.mano, draw: d.steps };
+    }
+    room.engine = new g.Engine(room.players.map((p) => ({ id: p.id, name: p.name })), settings);
+    // Solo para pruebas en local: empezar la pocha en una mano concreta
+    if (room.game === 'pocha' && process.env.TAPETE_DEBUG_HAND) room.engine.handIndex = Number(process.env.TAPETE_DEBUG_HAND);
     room.status = 'playing';
     room.lastSummary = null;
     systemMsg(room, '¡Empieza la partida!');
@@ -379,7 +400,7 @@ io.on('connection', (socket) => {
     if (!room || !s) throw new Error('No estás en ninguna sala');
     text = String(text || '').trim().slice(0, 200);
     if (!text) return;
-    room.chat.push({ name: s.name, avatar: s.avatar, text, t: Date.now() });
+    room.chat.push({ id: pidOf(), name: s.name, avatar: s.avatar, text, t: Date.now() });
     if (room.chat.length > 60) room.chat.shift();
     broadcastRoom(room);
   }));

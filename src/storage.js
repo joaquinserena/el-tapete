@@ -16,6 +16,7 @@ function emptyStats() {
     pocha: {
       partidas: 0, victorias: 0, manos: 0, aciertos: 0, fallos: 0, bazas: 0,
       puntosTotales: 0, mejorPuntuacion: null, peorPuntuacion: null, mejorRacha: 0, rivales: {},
+      subastas: 0, subastasCumplidas: 0,
     },
   };
 }

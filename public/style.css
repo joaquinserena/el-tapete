@@ -32,13 +32,18 @@ button { font: inherit; }
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   color: #fff;
 }
+#app { height: 100%; }
+.screen { height: 100%; }
+/* Si la pantalla no cabe, se desliza (móvil y ordenador) */
 .felt-page {
-  min-height: 100%;
+  height: 100%;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   background: #eceae4;
   padding: 16px;
 }
-.screen { height: 100%; }
+#screen-room { overflow-y: auto; overflow-x: hidden; }
 
 .logo {
   font-family: "Brush Script MT", "Segoe Script", "Lucida Handwriting", cursive;
@@ -111,6 +116,16 @@ input:focus { border-color: var(--gold); }
 .btn.small { padding: 5px 10px; font-size: .9rem; }
 .error { color: #ffb4a8; min-height: 1.2em; text-align: center; font-weight: 600; }
 .felt-page .error { color: var(--red); }
+
+.known-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.known-opt {
+  display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 3px; border-radius: 30px;
+  background: rgba(255,255,255,.14); cursor: pointer; border: 2px solid transparent; font-weight: 600;
+}
+.known-opt.sel { border-color: var(--gold); background: rgba(255,255,255,.28); }
+.muted-light { opacity: .75; font-weight: 400; }
+.me.clickable { cursor: pointer; padding: 3px 10px 3px 3px; border-radius: 30px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+.me.clickable .edit { font-size: .8rem; color: #888; }
 
 /* ---------- Menú ---------- */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; max-width: 900px; margin: 0 auto; }
@@ -201,7 +216,7 @@ input:focus { border-color: var(--gold); }
 
 /* ---------- Mesa ---------- */
 .table {
-  position: relative; width: 100vw; height: 100dvh; overflow: hidden;
+  position: relative; width: 100vw; height: max(100dvh, 640px); overflow: hidden;
   box-shadow: inset 0 0 0 6px #eceae4, inset 0 0 0 8px var(--felt-dark);
 }
 .table-head {
@@ -289,6 +304,27 @@ input:focus { border-color: var(--gold); }
 .bid-buttons { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: 92vw; }
 .bid-buttons .btn { min-width: 42px; }
 
+/* Sorteo con cartas */
+.draw-strip { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: min(92vw, 520px); }
+.draw-step { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .7rem; animation: pop .25s ease-out; }
+.draw-step .card { --card-w: clamp(30px, 8vw, 44px); }
+.draw-step.king .card { box-shadow: 0 0 0 3px var(--gold), 0 0 12px var(--gold); }
+.draw-step .nm { max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suit-buttons { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.suit-buttons .btn { display: flex; align-items: center; gap: 6px; }
+.big-suit { display: grid; place-items: center; width: 56px; height: 56px; background: #fff; border-radius: 10px; }
+
+/* Mensajes del chat sobre cada jugador */
+.chat-bubble {
+  background: #fffbe6; color: var(--ink); border-radius: 12px; padding: 4px 10px; font-size: .82rem;
+  max-width: 180px; box-shadow: 0 2px 8px rgba(0,0,0,.35); animation: pop .25s ease-out; word-break: break-word;
+}
+.chat-bubble::before { content: "💬 "; }
+body.chat-docked .table { width: calc(100vw - 340px); }
+body.chat-docked #chat-panel { width: 340px; box-shadow: -2px 0 8px rgba(0,0,0,.2); z-index: 17; }
+body.chat-docked .overlay { right: 340px; }
+body.chat-docked #chat-panel [data-close] { display: none; }
+
 /* Marcador del mus con piedras */
 .mus-score { display: flex; gap: 10px; }
 .team-score { background: rgba(0,0,0,.25); border-radius: 10px; padding: 4px 10px; display: flex; align-items: center; gap: 6px; font-size: .85rem; }
@@ -359,6 +395,9 @@ input:focus { border-color: var(--gold); }
   .seat .who { flex-direction: column; padding: 4px 6px; border-radius: 14px; gap: 2px; }
   .pos-top .who, .pos-top-left .who, .pos-top-right .who { flex-direction: row; padding: 3px 10px 3px 3px; border-radius: 30px; }
   .brand { display: none; }
+  .table-head .btn { white-space: nowrap; }
+  .room-title { font-size: .8rem; }
+  .info { top: 66px; }
   .pos-top { top: calc(120px + 4vh); }
   .pos-top-left { left: 25%; top: calc(120px + 4vh); }
   .pos-top-right { left: 75%; top: calc(120px + 4vh); }

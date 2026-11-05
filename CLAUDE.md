@@ -25,6 +25,18 @@ El usuario escribe en español: responde en español.
   Con `BOT_AUTOSTART=1 BOT_DELAY=10` juegan una partida completa y muestran las estadísticas.
   No lances bots contra la web publicada: ensucian las estadísticas reales.
 
-## Decisiones tomadas
-- Pocha: al asistir hay que montar si se puede (Fournier no lo deja claro; confirmar con el usuario si su grupo juega distinto).
-- Mus: por defecto a 40 piedras, 3 juegos y 8 reyes; el anfitrión puede cambiarlo.
+## Decisiones tomadas (reglas del grupo)
+- Pocha, baraja entera con 3, 4 o 5 jugadores (máx. 13, 10 u 8 cartas). Manos: indio (1 carta, ves las de los
+  demás y no la tuya), 1..max-1, tantas subastas como jugadores (se reparte todo; con 3 sobra una carta oculta),
+  max-1..1 e indio. 3 jugadores = 29 manos, 4 = 24, 5 = 21.
+- Pocha, subasta: mínimo = la mitad de las bazas (floor). Por turnos desde el mano se sube o se pasa (quien pasa
+  queda fuera) hasta que solo queda uno. Si nadie puja: se reparte otra vez; si vuelve a pasar, baja el mínimo en 1
+  y el primero que se pida ese mínimo se lo queda (no se puede pedir más). El ganador elige triunfo; luego los demás
+  se piden como siempre y todos puntúan. Siempre sale el mano (derecha del que reparte).
+- Pocha: el último en pedirse no puede hacer que la suma iguale las bazas. Al asistir hay que montar si se puede.
+- Pocha: el primer reparto se sortea tirando cartas desde alguien al azar hasta el primer rey (12). Reparte quien lo
+  saca, empieza el de su derecha, y el reparto va rotando a la derecha.
+- Mus: sorteo de parejas con reyes (solo los 12): los dos primeros con rey van juntos (asientos 1 y 3), reparte la
+  otra pareja (asiento 0) y el primero que sacó rey es mano. Sin señas. A 40 piedras, 3 juegos, 8 reyes por defecto.
+- "Derecha" = asiento siguiente; en pantalla el siguiente se dibuja a tu derecha (sentido antihorario).
+- Pruebas en local: `TAPETE_DEBUG_HAND=13` hace que la pocha empiece en esa mano (para ver subastas).

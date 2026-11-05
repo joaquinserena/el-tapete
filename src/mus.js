@@ -32,13 +32,40 @@ class Mus {
     this.scores = [0, 0];
     this.juegos = [0, 0];
     this.piedrasTotales = [0, 0];
-    this.mano = Math.floor(Math.random() * 4);
+    this.mano = Number.isInteger(settings.mano) ? settings.mano : Math.floor(Math.random() * 4);
     this.roundNumber = 0;
     this.matchWinner = null;
     this.stats = Array.from({ length: 4 }, () => ({
       manos: 0, ordagos: 0, ordagosGanados: 0, treintaYUna: 0, duples: 0, medias: 0, musCortados: 0,
     }));
-    this.startRound();
+    // Sorteo de parejas ya hecho por el servidor (solo para enseñarlo en la mesa)
+    this.drawSteps = Array.isArray(settings.draw) ? settings.draw : null;
+    if (this.drawSteps) {
+      this.initEmpty();
+      this.drawShown = 0;
+      this.phase = 'draw';
+      this.turn = null;
+    } else {
+      this.startRound();
+    }
+  }
+
+  initEmpty() {
+    this.hands = [[], [], [], []];
+    this.dealer = (this.mano + 3) % 4;
+    this.musSaid = {};
+    this.pendingDiscard = {};
+    this.musRounds = 0;
+    this.said = [null, null, null, null];
+    this.records = [];
+    this.bet = null;
+    this.lance = null;
+    this.declared = { pares: null, juego: null };
+    this.breakdown = [];
+    this.juegoWinner = null;
+    this.ordagoResult = null;
+    this.ready = new Set();
+    this.log = [];
   }
 
   // ---------- valoración de manos ----------
@@ -458,8 +485,16 @@ class Mus {
     this.startRound();
   }
 
-  tickDelay() { return null; }
-  tick() {}
+  tickDelay() {
+    if (this.phase !== 'draw') return null;
+    return this.drawShown < this.drawSteps.length ? 650 : 3500;
+  }
+
+  tick() {
+    if (this.phase !== 'draw') return;
+    if (this.drawShown < this.drawSteps.length) this.drawShown++;
+    else this.startRound();
+  }
   isFinished() { return this.phase === 'finished'; }
 
   summary() {
@@ -526,6 +561,9 @@ class Mus {
       const p = this.pares(seat);
       v.myInfo = { pares: p ? p.name : null, juego: this.sum(seat) };
     }
+    if (this.phase === 'draw') {
+      v.draw = { steps: this.drawSteps.slice(0, this.drawShown), done: this.drawShown >= this.drawSteps.length };
+    }
     if (reveal) {
       v.hands = this.hands;
       v.breakdown = this.breakdown;
@@ -543,4 +581,31 @@ class Mus {
   }
 }
 
-module.exports = { Mus, team };
+// Sorteo de parejas: se tira una carta por jugador, empezando por uno al azar, hasta que sale
+// un rey (solo los 12). Se sigue tirando a los demás hasta el segundo rey. Esos dos van juntos
+// y la otra pareja reparte; reparte el que deja de mano al primero que sacó rey.
+// Devuelve el nuevo orden de asientos (índices de los jugadores originales) y los pasos del sorteo.
+function musDraw() {
+  const deck = shuffle(makeDeck());
+  const kings = [];
+  const steps = [];
+  let i = Math.floor(Math.random() * 4);
+  while (kings.length < 2) {
+    if (!kings.includes(i)) {
+      const card = deck.pop();
+      steps.push({ idx: i, card });
+      if (card.r === 12) kings.push(i);
+    }
+    i = (i + 1) % 4;
+  }
+  const others = [0, 1, 2, 3].filter((x) => !kings.includes(x));
+  // Asientos: 0 reparte, 1 es mano (primer rey), 2 compañero del que reparte, 3 segundo rey
+  const order = [others[0], kings[0], others[1], kings[1]];
+  return {
+    order,
+    mano: 1,
+    steps: steps.map((s) => ({ seat: order.indexOf(s.idx), card: s.card })),
+  };
+}
+
+module.exports = { Mus, team, musDraw };

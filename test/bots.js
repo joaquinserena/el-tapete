@@ -37,7 +37,13 @@ for (let i = 0; i < N; i++) {
     const me = room.mySeat;
     let action = null;
     if (v.game === 'pocha') {
-      if (v.phase === 'bidding' && v.turn === me) {
+      if (v.phase === 'auction' && v.turn === me) {
+        action = Math.random() < (v.auction.reduced ? 0.5 : 0.35)
+          ? { type: 'auctionBid', value: v.auctionOptions[0] }
+          : { type: 'auctionPass' };
+      } else if (v.phase === 'chooseTrump' && v.turn === me) {
+        action = { type: 'trump', suit: pick(['oros', 'copas', 'espadas', 'bastos']) };
+      } else if (v.phase === 'bidding' && v.turn === me) {
         const opts = [];
         for (let k = 0; k <= v.cards; k++) if (v.forbiddenBid !== k) opts.push(k);
         action = { type: 'bid', value: pick(opts.slice(0, Math.max(1, Math.ceil(opts.length / 2)))) };

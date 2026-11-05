@@ -1,6 +1,10 @@
-// Motor de la Pocha (normas Fournier)
-// 3 a 5 jugadores. Con 3 se quitan los doses.
-const { makeDeck, shuffle } = require('./cards');
+// Motor de la Pocha (normas Fournier + variantes del grupo)
+// 3, 4 o 5 jugadores con la baraja entera (con 3 sobra una carta en las rondas de subasta).
+//
+// Rondas: indio (1 carta, ves las de los demás y no la tuya), 1, 2, ... hasta max-1,
+// tantas subastas como jugadores (se reparte todo), y luego max-1 ... 1 e indio otra vez.
+// Turno: el mano es el de la derecha del que reparte (asiento siguiente) y siempre sale él.
+const { makeDeck, shuffle, SUITS } = require('./cards');
 
 // Orden de las cartas: as, rey, caballo, sota, 7, 6, 5, 4, 3, 2
 const POWER = { 1: 10, 12: 9, 11: 8, 10: 7, 7: 6, 6: 5, 5: 4, 4: 3, 3: 2, 2: 1 };
@@ -15,78 +19,237 @@ function sortHand(hand, trump) {
   });
 }
 
+function buildSequence(n) {
+  const max = Math.floor(40 / n); // 3 -> 13, 4 -> 10, 5 -> 8
+  const up = [{ type: 'indio', cards: 1 }];
+  for (let i = 1; i < max; i++) up.push({ type: 'normal', cards: i });
+  const subastas = Array.from({ length: n }, () => ({ type: 'subasta', cards: max }));
+  const down = up.slice().reverse().map((h) => ({ ...h }));
+  return { max, sequence: [...up, ...subastas, ...down] };
+}
+
 class Pocha {
   constructor(players, settings = {}) {
     this.game = 'pocha';
     this.players = players; // [{id, name}]
     this.n = players.length;
     if (this.n < 3 || this.n > 5) throw new Error('La pocha se juega con 3, 4 o 5 personas');
-    this.settings = { modo: settings.modo === 'corta' ? 'corta' : 'completa' };
-    this.exclude = this.n === 3 ? [2] : [];
-    this.deckSize = 40 - this.exclude.length * 4;
-    this.max = Math.floor(this.deckSize / this.n);
-
-    const up = [];
-    for (let i = 1; i < this.max; i++) up.push(i);
-    const down = up.slice().reverse();
-    const top = this.settings.modo === 'corta' ? [this.max] : Array(this.n).fill(this.max);
-    this.sequence = [...up, ...top, ...down];
+    this.settings = {};
+    const { max, sequence } = buildSequence(this.n);
+    this.max = max;
+    this.sequence = sequence;
 
     this.handIndex = 0;
-    this.dealer = Math.floor(Math.random() * this.n);
     this.scores = Array(this.n).fill(0);
-    this.history = []; // por mano: {cards, bids, tricks, points}
+    this.history = [];
     this.stats = Array.from({ length: this.n }, () => ({
-      aciertos: 0, fallos: 0, bazas: 0, racha: 0, mejorRacha: 0, manos: 0,
+      aciertos: 0, fallos: 0, bazas: 0, racha: 0, mejorRacha: 0, manos: 0, subastas: 0, subastasCumplidas: 0,
     }));
     this.tiebreak = false;
-    this.startHand();
+
+    // Sorteo: se tiran cartas de una en una (empezando por alguien al azar); al primer rey le toca repartir
+    this.resetHandState();
+    this.draw = this.makeDraw();
+    this.dealer = this.draw.winner;
+    this.mano = this.next(this.dealer);
+    this.drawShown = 0;
+    this.phase = 'draw';
+    this.turn = null;
   }
 
   next(seat) { return (seat + 1) % this.n; }
+  fromMano() { return Array.from({ length: this.n }, (_, i) => (this.mano + i) % this.n); }
 
-  startHand() {
-    const cards = this.sequence[this.handIndex];
-    this.cards = cards;
-    this.mano = this.next(this.dealer);
-    const deck = shuffle(makeDeck(this.exclude));
+  makeDraw() {
+    const deck = shuffle(makeDeck());
+    let seat = Math.floor(Math.random() * this.n);
+    const steps = [];
+    for (const card of deck) {
+      steps.push({ seat, card });
+      if (card.r === 12) return { steps, winner: seat };
+      seat = this.next(seat);
+    }
+    return { steps, winner: seat };
+  }
+
+  resetHandState() {
     this.hands = Array.from({ length: this.n }, () => []);
-    let idx = 0;
-    for (let k = 0; k < cards; k++) {
-      for (let i = 0; i < this.n; i++) {
-        const seat = (this.mano + i) % this.n;
-        this.hands[seat].push(deck[idx++]);
-      }
-    }
-    if (idx < deck.length) {
-      this.trumpCard = deck[idx];
-      this.trumpFromDealer = false;
-    } else {
-      // Se reparte toda la baraja: la última carta del que reparte marca el triunfo
-      const dh = this.hands[this.dealer];
-      this.trumpCard = dh[dh.length - 1];
-      this.trumpFromDealer = true;
-    }
-    this.trump = this.trumpCard.s;
-    for (let i = 0; i < this.n; i++) this.hands[i] = sortHand(this.hands[i], this.trump);
     this.bids = Array(this.n).fill(null);
     this.tricks = Array(this.n).fill(0);
     this.trick = [];
     this.lastTrick = null;
     this.trickDone = null;
-    this.turn = this.mano;
-    this.phase = 'bidding';
     this.ready = new Set();
     this.handResult = null;
+    this.trump = null;
+    this.trumpCard = null;
+    this.trumpFromDealer = false;
+    this.auction = null;
+    this.auctionWinner = null;
+    this.bidOrder = [];
+    this.cards = 0;
+    this.handType = null;
   }
 
+  startHand() {
+    const h = this.sequence[this.handIndex];
+    this.resetHandState();
+    this.handType = h.type;
+    this.cards = h.cards;
+    this.mano = this.next(this.dealer);
+    if (h.type === 'subasta') {
+      const min = Math.floor(h.cards / 2);
+      this.auction = { min, startMin: min, reduced: false, attempt: 1, redeals: 0, highest: null, highestSeat: null, passed: [] };
+      this.deal();
+      this.startAuctionRound();
+    } else {
+      this.deal();
+      this.bidOrder = this.fromMano();
+      this.phase = 'bidding';
+      this.turn = this.bidOrder[0];
+    }
+  }
+
+  deal() {
+    const deck = shuffle(makeDeck());
+    this.hands = Array.from({ length: this.n }, () => []);
+    let idx = 0;
+    for (let k = 0; k < this.cards; k++) {
+      for (let i = 0; i < this.n; i++) this.hands[(this.mano + i) % this.n].push(deck[idx++]);
+    }
+    if (this.handType === 'subasta') {
+      // El triunfo lo elige quien gane la subasta. Con 3 jugadores sobra una carta que nadie ve.
+      this.trump = null;
+      this.trumpCard = null;
+    } else if (idx < deck.length) {
+      this.trumpCard = deck[idx];
+      this.trump = this.trumpCard.s;
+      this.trumpFromDealer = false;
+    } else {
+      const dh = this.hands[this.dealer];
+      this.trumpCard = dh[dh.length - 1];
+      this.trump = this.trumpCard.s;
+      this.trumpFromDealer = true;
+    }
+    this.sortHands();
+  }
+
+  sortHands() {
+    for (let i = 0; i < this.n; i++) this.hands[i] = sortHand(this.hands[i], this.trump);
+  }
+
+  // ---------- subasta ----------
+  startAuctionRound() {
+    const A = this.auction;
+    A.highest = null;
+    A.highestSeat = null;
+    A.passed = [];
+    this.phase = 'auction';
+    this.turn = this.mano;
+  }
+
+  auctionOptions() {
+    const A = this.auction;
+    if (A.reduced) return [A.min];
+    const lo = Math.max(A.min, A.highest === null ? A.min : A.highest + 1);
+    const opts = [];
+    for (let v = lo; v <= this.cards; v++) opts.push(v);
+    return opts;
+  }
+
+  auctionBid(seat, v) {
+    if (this.phase !== 'auction') throw new Error('No es momento de subastar');
+    if (seat !== this.turn) throw new Error('No es tu turno');
+    if (!this.auctionOptions().includes(v)) throw new Error('Puja no válida');
+    const A = this.auction;
+    A.highest = v;
+    A.highestSeat = seat;
+    // Si se ha bajado el mínimo, el primero que se lo pide se lo queda
+    if (A.reduced || v === this.cards) return this.winAuction(seat, v);
+    this.advanceAuction(seat);
+  }
+
+  auctionPass(seat) {
+    if (this.phase !== 'auction') throw new Error('No es momento de subastar');
+    if (seat !== this.turn) throw new Error('No es tu turno');
+    const A = this.auction;
+    A.passed.push(seat);
+    this.advanceAuction(seat);
+  }
+
+  advanceAuction(from) {
+    const A = this.auction;
+    const others = [];
+    for (let i = 1; i <= this.n; i++) {
+      const s = (from + i) % this.n;
+      if (!A.passed.includes(s) && s !== A.highestSeat) others.push(s);
+    }
+    if (others.length) {
+      this.turn = others[0];
+      return;
+    }
+    if (A.highestSeat !== null) return this.winAuction(A.highestSeat, A.highest);
+    // Nadie ha pujado
+    if (!A.reduced && A.attempt < 2) {
+      A.attempt++;
+    } else {
+      A.reduced = true;
+      A.min--;
+    }
+    A.redeals++;
+    this.deal();
+    if (A.min <= 0) return this.winAuction(this.mano, 0);
+    this.startAuctionRound();
+  }
+
+  winAuction(seat, v) {
+    this.auctionWinner = seat;
+    this.bids[seat] = v;
+    this.stats[seat].subastas++;
+    this.phase = 'chooseTrump';
+    this.turn = seat;
+  }
+
+  chooseTrump(seat, suit) {
+    if (this.phase !== 'chooseTrump') throw new Error('No es momento de elegir triunfo');
+    if (seat !== this.auctionWinner) throw new Error('El triunfo lo elige quien ha ganado la subasta');
+    if (!SUITS.includes(suit)) throw new Error('Palo no válido');
+    this.trump = suit;
+    this.sortHands();
+    this.bidOrder = this.fromMano().filter((s) => s !== this.auctionWinner);
+    this.phase = 'bidding';
+    this.turn = this.bidOrder[0];
+  }
+
+  // ---------- apuestas ----------
+  lastBidder() { return this.bidOrder[this.bidOrder.length - 1]; }
+
   forbiddenBid() {
-    // Solo afecta al que reparte (último en hablar)
-    const others = this.bids.reduce((s, b, i) => (i === this.dealer || b === null ? s : s + b), 0);
+    // El último en pedirse no puede hacer que la suma sea igual al número de bazas
+    const last = this.lastBidder();
+    const others = this.bids.reduce((s, b, i) => (i === last || b === null ? s : s + b), 0);
     const f = this.cards - others;
     return f >= 0 && f <= this.cards ? f : null;
   }
 
+  bid(seat, v) {
+    if (this.phase !== 'bidding') throw new Error('No es momento de pedirse');
+    if (seat !== this.turn) throw new Error('No es tu turno');
+    if (!Number.isInteger(v) || v < 0 || v > this.cards) throw new Error('Número no válido');
+    const last = this.lastBidder();
+    if (seat === last && v === this.forbiddenBid()) {
+      throw new Error(`Eres el último en pedirte: no puedes pedir ${v}, la suma no puede ser igual al número de bazas`);
+    }
+    this.bids[seat] = v;
+    if (seat === last) {
+      this.phase = 'playing';
+      this.turn = this.mano;
+    } else {
+      this.turn = this.bidOrder[this.bidOrder.indexOf(seat) + 1];
+    }
+  }
+
+  // ---------- juego de bazas ----------
   currentWinner(trick) {
     let best = trick[0];
     for (const t of trick.slice(1)) {
@@ -130,6 +293,9 @@ class Pocha {
   act(seat, a) {
     if (this.phase === 'finished') throw new Error('La partida ha terminado');
     switch (a.type) {
+      case 'auctionBid': return this.auctionBid(seat, Number(a.value));
+      case 'auctionPass': return this.auctionPass(seat);
+      case 'trump': return this.chooseTrump(seat, a.suit);
       case 'bid': return this.bid(seat, Number(a.value));
       case 'play': return this.play(seat, a.card);
       case 'ready': return this.setReady(seat);
@@ -137,25 +303,11 @@ class Pocha {
     }
   }
 
-  bid(seat, v) {
-    if (this.phase !== 'bidding') throw new Error('No es momento de apostar');
-    if (seat !== this.turn) throw new Error('No es tu turno');
-    if (!Number.isInteger(v) || v < 0 || v > this.cards) throw new Error('Apuesta no válida');
-    if (seat === this.dealer && v === this.forbiddenBid()) {
-      throw new Error(`Como repartes, no puedes pedir ${v}: la suma no puede ser igual al número de bazas`);
-    }
-    this.bids[seat] = v;
-    if (seat === this.dealer) {
-      this.phase = 'playing';
-      this.turn = this.mano;
-    } else {
-      this.turn = this.next(seat);
-    }
-  }
-
   play(seat, cardId) {
     if (this.phase !== 'playing') throw new Error('No es momento de jugar carta');
     if (seat !== this.turn) throw new Error('No es tu turno');
+    // En el indio no ves tu carta: juegas "la que tengas"
+    if (this.handType === 'indio' && cardId === 'hidden' && this.hands[seat].length) cardId = this.hands[seat][0].id;
     const legal = this.legalCards(seat);
     const card = legal.find((c) => c.id === cardId);
     if (!card) throw new Error('No puedes jugar esa carta (hay que asistir, montar o fallar)');
@@ -171,10 +323,18 @@ class Pocha {
     }
   }
 
-  // Pausa para que se vea la baza completa
-  tickDelay() { return this.phase === 'trickDone' ? 1400 : null; }
+  tickDelay() {
+    if (this.phase === 'trickDone') return 1400;
+    if (this.phase === 'draw') return this.drawShown < this.draw.steps.length ? 650 : 3000;
+    return null;
+  }
 
   tick() {
+    if (this.phase === 'draw') {
+      if (this.drawShown < this.draw.steps.length) this.drawShown++;
+      else this.startHand();
+      return;
+    }
     if (this.phase !== 'trickDone') return;
     const { winner } = this.trickDone;
     this.tricks[winner]++;
@@ -203,14 +363,15 @@ class Pocha {
         st.aciertos++;
         st.racha++;
         st.mejorRacha = Math.max(st.mejorRacha, st.racha);
+        if (this.handType === 'subasta' && i === this.auctionWinner) st.subastasCumplidas++;
       } else {
         st.fallos++;
         st.racha = 0;
       }
     });
     this.history.push({
-      cards: this.cards, bids: this.bids.slice(), tricks: this.tricks.slice(), points,
-      totals: this.scores.slice(), trump: this.trump,
+      type: this.handType, cards: this.cards, bids: this.bids.slice(), tricks: this.tricks.slice(), points,
+      totals: this.scores.slice(), trump: this.trump, auctionWinner: this.auctionWinner,
     });
     this.handResult = { points };
     this.phase = 'handEnd';
@@ -239,7 +400,7 @@ class Pocha {
       if (leaders > 1) {
         // Empate: manos extra de una carta hasta deshacerlo
         this.tiebreak = true;
-        this.sequence.push(1);
+        this.sequence.push({ type: 'normal', cards: 1 });
       } else {
         this.phase = 'finished';
         this.turn = null;
@@ -269,6 +430,7 @@ class Pocha {
 
   viewFor(seat) {
     const isMine = seat !== null && seat !== undefined && seat >= 0;
+    const indio = this.handType === 'indio' && this.phase !== 'handEnd';
     const view = {
       game: 'pocha',
       phase: this.phase,
@@ -277,6 +439,7 @@ class Pocha {
       handNumber: this.handIndex + 1,
       totalHands: this.sequence.length,
       sequence: this.sequence,
+      handType: this.handType,
       cards: this.cards,
       dealer: this.dealer,
       mano: this.mano,
@@ -285,6 +448,7 @@ class Pocha {
       trumpCard: this.trumpCard,
       trumpFromDealer: this.trumpFromDealer,
       bids: this.bids,
+      bidOrder: this.bidOrder,
       tricks: this.tricks,
       trick: this.trickDone ? this.trickDone.cards : this.trick,
       trickWinner: this.trickDone ? this.trickDone.winner : null,
@@ -294,19 +458,46 @@ class Pocha {
       history: this.history,
       ready: [...this.ready],
       tiebreak: this.tiebreak,
-      myHand: isMine ? this.hands[seat] : [],
+      myHand: [],
+      othersHands: null,
       legal: [],
       forbiddenBid: null,
+      auction: this.auction && {
+        min: this.auction.min, startMin: this.auction.startMin, reduced: this.auction.reduced,
+        attempt: this.auction.attempt, redeals: this.auction.redeals, highest: this.auction.highest,
+        highestSeat: this.auction.highestSeat, passed: this.auction.passed,
+      },
+      auctionWinner: this.auctionWinner,
+      auctionOptions: [],
     };
-    if (isMine && this.phase === 'playing' && this.turn === seat) {
-      view.legal = this.legalCards(seat).map((c) => c.id);
+    if (this.phase === 'draw') {
+      view.draw = {
+        steps: this.draw.steps.slice(0, this.drawShown),
+        done: this.drawShown >= this.draw.steps.length,
+        dealer: this.dealer,
+        mano: this.mano,
+      };
+      return view;
     }
-    if (isMine && this.phase === 'bidding' && this.turn === seat && seat === this.dealer) {
-      view.forbiddenBid = this.forbiddenBid();
+    if (isMine) {
+      if (indio) {
+        // Ves las cartas de los demás, pero no la tuya
+        view.myHand = this.hands[seat].map(() => ({ id: 'hidden', hidden: true }));
+        view.othersHands = this.hands.map((h, i) => (i === seat ? null : h));
+      } else {
+        view.myHand = this.hands[seat];
+      }
+      if (this.phase === 'playing' && this.turn === seat) {
+        view.legal = indio ? ['hidden'] : this.legalCards(seat).map((c) => c.id);
+      }
+      if (this.phase === 'bidding' && this.turn === seat && seat === this.lastBidder()) {
+        view.forbiddenBid = this.forbiddenBid();
+      }
+      if (this.phase === 'auction' && this.turn === seat) view.auctionOptions = this.auctionOptions();
     }
     if (this.phase === 'finished') view.summary = this.summary();
     return view;
   }
 }
 
-module.exports = { Pocha, POWER };
+module.exports = { Pocha, POWER, buildSequence };

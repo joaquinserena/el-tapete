@@ -14,6 +14,11 @@
       <div class="panel felt">
         <h1 class="logo">El Tapete</h1>
         <p class="subtitle">Mus y pocha con los amigos</p>
+        <div id="known" class="hidden">
+          <div class="lbl">¿Ya has jugado? Toca quién eres</div>
+          <div id="known-list" class="known-list"></div>
+          <div class="lbl muted-light">…o crea un jugador nuevo</div>
+        </div>
         <label class="lbl" for="name-input">¿Quién eres?</label>
         <input id="name-input" maxlength="20" placeholder="Tu nombre" autocomplete="off">
         <div class="lbl">Elige tu avatar</div>
@@ -28,11 +33,10 @@
     <!-- Menú -->
     <section id="screen-menu" class="screen felt-page hidden">
       <header class="topbar">
-        <div class="me" id="menu-me"></div>
+        <div class="me clickable" id="menu-me" title="Editar nombre y avatar"></div>
         <div class="logo small">El Tapete</div>
         <div class="topbar-actions">
           <button class="btn ghost" id="btn-stats">📊 Estadísticas</button>
-          <button class="btn ghost" id="btn-logout" title="Cambiar de jugador">✎</button>
         </div>
       </header>
       <div id="rejoin-banner" class="banner hidden">
@@ -85,7 +89,7 @@
           <div id="room-title" class="room-title"></div>
           <div class="table-head-right">
             <button class="btn ghost small" id="btn-score" title="Marcador">📋</button>
-            <button class="btn ghost small" id="btn-chat" title="Chat">💬<span id="chat-badge" class="badge hidden"></span></button>
+            <button class="btn ghost small" id="btn-chat" title="Chat">💬 Chat<span id="chat-badge" class="badge hidden"></span></button>
           </div>
         </div>
         <div id="seats"></div>

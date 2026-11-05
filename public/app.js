@@ -30,6 +30,12 @@
   let overlayHiddenFor = null; // permite ocultar el resumen para ver la mesa
   let loggedIn = false;
   let envidoVal = null;
+  const chatBubbles = {}; // playerId -> { text, until }
+  let chatClosed = false; // en pantallas anchas el chat va fijo a la derecha salvo que lo cierres
+  const chatBubbleFor = (pid) => {
+    const b = chatBubbles[pid];
+    return b && b.until > Date.now() ? b.text : null;
+  };
 
   const socket = io({ autoConnect: false });
 
@@ -40,6 +46,7 @@
 
   function show(name) {
     screen = name;
+    if (name !== 'room') document.body.classList.remove('chat-docked');
     for (const s of ['login', 'menu', 'stats', 'room']) $(`#screen-${s}`).classList.toggle('hidden', s !== name);
     if (name === 'menu') renderMenu();
     if (name === 'room') renderRoom();
@@ -67,8 +74,33 @@
   let pickEmoji = me.emoji || AVATARS[Math.floor(Math.random() * AVATARS.length)];
   let pickColor = me.color || COLORS[Math.floor(Math.random() * COLORS.length)];
 
-  function renderLogin() {
-    $('#name-input').value = me.name || '';
+  let knownPlayers = [];
+  async function loadKnown() {
+    try {
+      const r = await fetch('/api/players');
+      knownPlayers = await r.json();
+    } catch { knownPlayers = []; }
+    renderLogin();
+  }
+
+  // resetName: solo al abrir la pantalla; al cambiar avatar o color se respeta lo escrito
+  function renderLogin(resetName = false) {
+    if (resetName) $('#name-input').value = me.name || '';
+    const typed = $('#name-input').value.trim().toLowerCase();
+    $('#known').classList.toggle('hidden', knownPlayers.length === 0);
+    const kl = $('#known-list');
+    kl.innerHTML = '';
+    for (const p of knownPlayers) {
+      const b = h('div', 'known-opt' + (p.name.toLowerCase() === typed ? ' sel' : ''), `${avatarHtml(p.avatar, 'sm')}<span>${esc(p.name)}</span>`);
+      b.onclick = () => {
+        const [emoji, color] = String(p.avatar || '').split('|');
+        $('#name-input').value = p.name;
+        if (emoji) pickEmoji = emoji;
+        if (color) pickColor = color;
+        renderLogin();
+      };
+      kl.appendChild(b);
+    }
     const ag = $('#avatar-grid');
     ag.innerHTML = '';
     for (const a of AVATARS) {
@@ -89,7 +121,7 @@
 
   async function hello() {
     const res = await emit('hello', { playerId: me.playerId, name: me.name, avatar: `${me.emoji}|${me.color}` });
-    if (res.error) { show('login'); renderLogin(); $('#login-error').textContent = res.error; return; }
+    if (res.error) { show('login'); renderLogin(true); $('#login-error').textContent = res.error; return; }
     loggedIn = true;
     if (res.roomId) {
       show('room');
@@ -108,6 +140,18 @@
     if (socket.connected) hello(); else socket.connect();
   };
   $('#name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-enter').click(); });
+  $('#name-input').addEventListener('input', () => {
+    $$('#known-list .known-opt').forEach((el, i) => {
+      el.classList.toggle('sel', knownPlayers[i] && knownPlayers[i].name.toLowerCase() === $('#name-input').value.trim().toLowerCase());
+    });
+  });
+  function openProfileEditor() {
+    pickEmoji = me.emoji || pickEmoji;
+    pickColor = me.color || pickColor;
+    show('login');
+    renderLogin(true);
+    loadKnown();
+  }
 
   socket.on('connect', () => { $('#conn').classList.add('hidden'); if (me.name) hello(); });
   socket.on('disconnect', () => { if (loggedIn) $('#conn').classList.remove('hidden'); });
@@ -116,11 +160,19 @@
   socket.on('kicked', () => { room = null; toast('El anfitrión te ha sacado de la sala'); show('menu'); });
   socket.on('room', (r) => {
     const prevPhase = room && room.view && room.view.phase;
+    const sameRoom = room && room.id === r.id;
     room = r;
     if (r.view && r.view.phase !== prevPhase) { discardSel.clear(); overlayHiddenFor = null; }
     if (!r.view || r.view.turn !== r.mySeat) envidoVal = null;
-    if (r.chat.length > lastChatLen && $('#chat-panel').classList.contains('hidden')) {
-      unread += r.chat.length - lastChatLen;
+    if (!sameRoom) lastChatLen = r.chat.length;
+    if (r.chat.length > lastChatLen) {
+      if ($('#chat-panel').classList.contains('hidden')) unread += r.chat.length - lastChatLen;
+      // Los mensajes nuevos salen unos segundos encima de quien los escribe
+      for (const m of r.chat.slice(lastChatLen)) {
+        if (m.system || !m.id) continue;
+        chatBubbles[m.id] = { text: m.text, until: Date.now() + 7000 };
+        setTimeout(() => { if (screen === 'room') renderRoom(); }, 7100);
+      }
     }
     lastChatLen = r.chat.length;
     if (screen === 'room') renderRoom();
@@ -129,7 +181,7 @@
 
   // ---------- menú ----------
   function renderMenu() {
-    $('#menu-me').innerHTML = `${avatarHtml(`${me.emoji}|${me.color}`)}<span>${esc(me.name)}</span>`;
+    $('#menu-me').innerHTML = `${avatarHtml(`${me.emoji}|${me.color}`)}<span>${esc(me.name)}</span><span class="edit">✎</span>`;
     for (const g of ['mus', 'pocha']) {
       const rs = lobby.filter((r) => r.game === g);
       const waiting = rs.filter((r) => r.status === 'waiting');
@@ -167,7 +219,7 @@
     if (res.ok) show('room');
   };
   $('#btn-rejoin').onclick = async () => { const r = await emit('rejoin'); if (r.ok) show('room'); };
-  $('#btn-logout').onclick = () => { show('login'); renderLogin(); };
+  $('#menu-me').onclick = openProfileEditor;
   $('#btn-stats').onclick = () => { show('stats'); loadStats(); };
   $('#btn-stats-back').onclick = () => show('menu');
 
@@ -252,6 +304,7 @@
         [pct(s.aciertos, s.aciertos + s.fallos), '% manos clavadas'], [s.aciertos, 'Manos clavadas'], [s.fallos, 'Manos falladas'],
         [s.mejorRacha, 'Mejor racha clavando'], [s.mejorPuntuacion ?? '–', 'Mejor puntuación'], [s.peorPuntuacion ?? '–', 'Peor puntuación'],
         [s.partidas ? Math.round(s.puntosTotales / s.partidas) : '–', 'Media de puntos'], [s.bazas, 'Bazas ganadas'],
+        [`${s.subastasCumplidas || 0}/${s.subastas || 0}`, 'Subastas cumplidas/ganadas'],
         [bestOf(s.rivales, 'best'), 'Rival favorito'], [bestOf(s.rivales, 'worst'), 'Bestia negra'],
       ];
     }
@@ -282,7 +335,15 @@
     room = null;
     show('menu');
   };
-  $('#btn-chat').onclick = () => { $('#chat-panel').classList.toggle('hidden'); $('#score-panel').classList.add('hidden'); unread = 0; renderChat(); };
+  const isWide = () => window.innerWidth >= 1100;
+  $('#btn-chat').onclick = () => {
+    if (isWide()) chatClosed = !chatClosed;
+    else $('#chat-panel').classList.toggle('hidden');
+    $('#score-panel').classList.add('hidden');
+    unread = 0;
+    renderRoom();
+    if (!$('#chat-panel').classList.contains('hidden')) setTimeout(() => $('#chat-input').focus(), 50);
+  };
   $('#btn-score').onclick = () => { $('#score-panel').classList.toggle('hidden'); $('#chat-panel').classList.add('hidden'); renderScorePanel(); };
   $$('[data-close]').forEach((b) => { b.onclick = () => $('#' + b.dataset.close).classList.add('hidden'); });
   $('#chat-form').onsubmit = async (e) => {
@@ -294,6 +355,10 @@
   };
 
   function renderChat() {
+    const docked = screen === 'room' && isWide() && !chatClosed;
+    document.body.classList.toggle('chat-docked', docked);
+    if (docked) { $('#chat-panel').classList.remove('hidden'); unread = 0; }
+    else if (isWide()) $('#chat-panel').classList.add('hidden');
     const badge = $('#chat-badge');
     badge.textContent = unread;
     badge.classList.toggle('hidden', !unread);
@@ -347,8 +412,26 @@
       if (extra.count > 6) el.querySelector('.tags').insertAdjacentHTML('beforeend', `<span class="tag-chip dark">${extra.count} cartas</span>`);
     }
     if (p && !p.connected) el.querySelector('.tags').insertAdjacentHTML('beforeend', '<span class="tag-chip dark">desconectado</span>');
+    const said = p && chatBubbleFor(p.id);
+    if (said) el.appendChild(h('div', 'chat-bubble', esc(said)));
     $('#seats').appendChild(el);
     return el;
+  }
+
+  // Sorteo con cartas (quién reparte en la pocha, parejas en el mus)
+  function renderDraw(d, finalHtml) {
+    const c = $('#center');
+    c.appendChild(h('div', 'pill', d.done ? '<b>¡Sorteo hecho!</b>' : 'Sorteo: se tiran cartas hasta que sale un <b>rey</b>…'));
+    const strip = h('div', 'draw-strip');
+    d.steps.forEach((s) => {
+      const p = room.players[s.seat];
+      const it = h('div', 'draw-step' + (s.card.r === 12 ? ' king' : ''));
+      it.appendChild(Cards.face(s.card));
+      it.insertAdjacentHTML('beforeend', `<span class="nm">${esc(p ? p.name : '')}</span>`);
+      strip.appendChild(it);
+    });
+    c.appendChild(strip);
+    if (d.done) c.appendChild(h('div', 'pill', finalHtml));
   }
 
   function meTag(extra = {}) {
@@ -357,6 +440,8 @@
     row.innerHTML = `<div class="me-tag${extra.turn ? ' turn' : ''}">${avatarHtml(p.avatar, 'sm')}${esc(p.name)}${extra.mark ? ' ' + extra.mark : ''}</div>
       ${(extra.tags || []).map((t) => `<span class="tag-chip ${t.cls || ''}">${t.html}</span>`).join('')}
       ${extra.bubble ? `<span class="bubble${extra.hot ? ' hot' : ''}">${esc(extra.bubble)}</span>` : ''}`;
+    const said = chatBubbleFor(p.id);
+    if (said) row.appendChild(h('span', 'chat-bubble', esc(said)));
     return row;
   }
 
@@ -392,9 +477,12 @@
         <div class="row">Juegos para ganar <select id="set-juegos" ${dis}>${[1, 2, 3].map((j) => `<option value="${j}" ${s.juegos == j ? 'selected' : ''}>${j}</option>`).join('')}</select></div>
         <div class="row">Baraja <select id="set-reyes" ${dis}><option value="8" ${s.ochoReyes ? 'selected' : ''}>8 reyes (treses = reyes, doses = ases)</option><option value="4" ${!s.ochoReyes ? 'selected' : ''}>4 reyes</option></select></div>`;
     } else {
-      settings = `<div class="row">Partida <select id="set-modo" ${dis}><option value="completa" ${s.modo === 'completa' ? 'selected' : ''}>Completa (sube, una vuelta con todas, baja)</option><option value="corta" ${s.modo === 'corta' ? 'selected' : ''}>Corta (sube y baja)</option></select></div>`;
+      const nn = Math.min(5, Math.max(3, n));
+      const max = Math.floor(40 / nn);
+      settings = `<p class="muted">Con ${nn} jugadores: indio, de 1 a ${max - 1} cartas, ${nn} subastas de ${max} cartas,
+        de ${max - 1} a 1 e indio (${2 * max + nn} manos). Para repartir la primera se tiran cartas hasta que sale un rey.</p>`;
     }
-    const teams = room.game === 'mus';
+    const teams = false;
     ov.innerHTML = `<div class="dialog">
       <h2>${esc(room.gameName)} · sala de espera</h2>
       <div class="muted">Código de la sala: <span class="code-box">${esc(room.id)}</span></div>
@@ -408,53 +496,71 @@
         </div>`).join('')}
         ${Array.from({ length: Math.max(0, room.max - n) }, () => '<div class="waiting-player muted">· silla libre ·</div>').join('')}
       </div>
-      ${teams ? '<p class="muted">Las parejas se forman con los asientos 1º y 3º contra 2º y 4º.</p>' : ''}
+      ${room.game === 'mus' ? '<p class="muted">Al empezar se sortean las parejas: se tiran cartas y los dos primeros que saquen rey van juntos. Reparte la otra pareja.</p>' : ''}
       ${settings}
       <p class="muted">${need}. ${isHost ? (canStart ? '¡Ya podéis empezar!' : 'Esperando a que se sienten…') : 'El anfitrión empezará la partida.'}</p>
       <div class="row">
         ${isHost ? `<button class="btn primary" id="btn-start" ${canStart ? '' : 'disabled'}>Empezar partida</button>
-                    <button class="btn light" id="btn-shuffle">Sortear asientos</button>` : ''}
+                    ${room.game === 'pocha' ? '<button class="btn light" id="btn-shuffle">Sortear asientos</button>' : ''}` : ''}
         <button class="btn light" id="btn-wait-leave">Salir</button>
       </div>
       ${room.lastSummary ? `<p class="muted">Última partida: 🏆 ${esc(room.lastSummary.winners.join(' y '))} — ${esc(room.lastSummary.detail)}</p>` : ''}
     </div>`;
     if (isHost) {
       $('#btn-start').onclick = () => emit('startGame');
-      $('#btn-shuffle').onclick = () => emit('shuffleSeats');
+      if ($('#btn-shuffle')) $('#btn-shuffle').onclick = () => emit('shuffleSeats');
       $$('[data-kick]').forEach((b) => { b.onclick = () => emit('kick', { playerId: b.dataset.kick }); });
       const upd = (obj) => emit('updateSettings', obj);
       if (room.game === 'mus') {
         $('#set-puntos').onchange = (e) => upd({ puntos: Number(e.target.value) });
         $('#set-juegos').onchange = (e) => upd({ juegos: Number(e.target.value) });
         $('#set-reyes').onchange = (e) => upd({ ochoReyes: e.target.value === '8' });
-      } else {
-        $('#set-modo').onchange = (e) => upd({ modo: e.target.value });
       }
     }
     $('#btn-wait-leave').onclick = async () => { await emit('leaveRoom'); room = null; show('menu'); };
   }
 
   // ----- POCHA -----
+  const handLabel = (type, cards) => (type === 'indio' ? 'Indio' : type === 'subasta' ? 'Subasta' : `${cards} carta${cards > 1 ? 's' : ''}`);
+
   function renderPocha(v) {
     const n = v.n;
     const my = room.mySeat;
+
+    if (v.phase === 'draw') {
+      $('#info').innerHTML = '<span class="pill">¿Quién reparte?</span>';
+      for (let s = 0; s < n; s++) if (s !== my) seatEl(s, n, { tags: [{ html: `${v.scores[s]} pts`, cls: 'dark' }] });
+      renderDraw(v.draw, `Reparte <b>${esc(pname(v.draw.dealer))}</b> · empieza pidiéndose <b>${esc(pname(v.draw.mano))}</b>`);
+      $('#controls').appendChild(meTag({}));
+      return;
+    }
+
     const bidSum = v.bids.reduce((s, b) => s + (b ?? 0), 0);
     const allBid = v.bids.every((b) => b !== null);
+    const subastaN = v.handType === 'subasta' ? v.sequence.slice(0, v.handNumber).filter((x) => x.type === 'subasta').length : 0;
     $('#info').innerHTML = `
       <span class="pill">Mano <b>${v.handNumber}</b>/${v.totalHands}${v.tiebreak ? ' (desempate)' : ''}</span>
-      <span class="pill">Cartas: <b>${v.cards}</b></span>
-      <span class="pill">Pedidas: <b>${bidSum}</b>/${v.cards}${allBid ? (bidSum > v.cards ? ' · sobran' : ' · faltan') : ''}</span>`;
+      <span class="pill"><b>${handLabel(v.handType, v.cards)}</b>${v.handType === 'subasta' ? ` ${subastaN}/${n} · ${v.cards} cartas` : ''}</span>
+      ${v.phase === 'auction' || v.phase === 'chooseTrump' ? '' : `<span class="pill">Pedidas: <b>${bidSum}</b>/${v.cards}${allBid ? (bidSum > v.cards ? ' · sobran' : ' · faltan') : ''}</span>`}`;
 
+    const A = v.auction;
     for (let s = 0; s < n; s++) {
       if (s === my) continue;
       const tags = [];
-      if (v.bids[s] !== null) tags.push({ html: `Pide ${v.bids[s]}`, cls: '' });
-      if (v.phase !== 'bidding') tags.push({ html: `Lleva ${v.tricks[s]}`, cls: v.tricks[s] === v.bids[s] ? 'gold' : 'dark' });
+      if (v.phase === 'auction' && A) {
+        if (A.highestSeat === s) tags.push({ html: `Puja ${A.highest}`, cls: 'gold' });
+        else if (A.passed.includes(s)) tags.push({ html: 'Pasa', cls: 'dark' });
+      } else if (v.bids[s] !== null) {
+        tags.push({ html: `${v.auctionWinner === s ? 'Subasta ' : 'Pide '}${v.bids[s]}`, cls: v.auctionWinner === s ? 'gold' : '' });
+      }
+      if (v.phase === 'playing' || v.phase === 'trickDone' || v.phase === 'handEnd') tags.push({ html: `Lleva ${v.tricks[s]}`, cls: v.tricks[s] === v.bids[s] ? 'gold' : 'dark' });
       tags.push({ html: `${v.scores[s]} pts`, cls: 'dark' });
       if (s === v.dealer) tags.push({ html: 'Reparte', cls: 'dark' });
+      const indioCards = v.othersHands ? v.othersHands[s] : null;
       seatEl(s, n, {
         turn: v.turn === s,
-        count: v.handSizes[s],
+        count: indioCards ? 0 : v.handSizes[s],
+        revealed: indioCards || null,
         tags,
       });
     }
@@ -462,12 +568,25 @@
     // Centro: triunfo + baza
     const c = $('#center');
     const tb = h('div', 'trump-box');
-    tb.appendChild(Cards.face(v.trumpCard));
-    tb.appendChild(h('div', '', `<div>Triunfo</div><b style="font-size:1.2rem">${SUIT_NAMES[v.trump]}</b>${v.trumpFromDealer ? `<div class="muted" style="color:#ddd;font-size:.75rem">(la última de ${esc(pname(v.dealer))})</div>` : ''}`));
+    if (v.trumpCard) {
+      tb.appendChild(Cards.face(v.trumpCard));
+      tb.appendChild(h('div', '', `<div>Triunfo</div><b style="font-size:1.2rem">${SUIT_NAMES[v.trump]}</b>${v.trumpFromDealer ? `<div style="color:#ddd;font-size:.75rem">(la última de ${esc(pname(v.dealer))})</div>` : ''}`));
+    } else if (v.trump) {
+      tb.appendChild(h('div', 'big-suit', Cards.suitIcon(v.trump, 40)));
+      tb.appendChild(h('div', '', `<div>Triunfo</div><b style="font-size:1.2rem">${SUIT_NAMES[v.trump]}</b><div style="color:#ddd;font-size:.75rem">lo ha elegido ${esc(pname(v.auctionWinner))}</div>`));
+    } else {
+      tb.appendChild(h('div', '', '<div>Triunfo</div><b>lo elige quien gane la subasta</b>'));
+    }
     c.appendChild(tb);
+    if (v.phase === 'auction' && A) {
+      let txt = A.reduced
+        ? `Nadie pujó: el primero que se pida <b>${A.min}</b> se lo queda`
+        : (A.highest === null ? `Subasta: mínimo <b>${A.min}</b> bazas` : `Va ganando <b>${esc(pname(A.highestSeat))}</b> con <b>${A.highest}</b>`);
+      if (A.redeals) txt += ` · repartido de nuevo (${A.redeals})`;
+      c.appendChild(h('div', 'pill', txt));
+    }
     const ta = h('div', 'trick-area');
-    const shown = v.trick.length ? v.trick : [];
-    shown.forEach((t) => {
+    v.trick.forEach((t) => {
       const e = Cards.face(t.card, v.trickWinner === t.seat ? 'win' : '');
       const [x, y] = TRICK_POS[relPos(t.seat, n)];
       e.style.left = x + '%';
@@ -479,36 +598,73 @@
 
     // Mi zona
     const myTags = [];
-    if (v.bids[my] !== null) myTags.push({ html: `Pides ${v.bids[my]}` });
-    if (v.phase !== 'bidding') myTags.push({ html: `Llevas ${v.tricks[my]}`, cls: v.tricks[my] === v.bids[my] ? 'gold' : 'dark' });
+    if (v.phase === 'auction' && A) {
+      if (A.highestSeat === my) myTags.push({ html: `Pujas ${A.highest}`, cls: 'gold' });
+      else if (A.passed.includes(my)) myTags.push({ html: 'Has pasado', cls: 'dark' });
+    } else if (v.bids[my] !== null) {
+      myTags.push({ html: `${v.auctionWinner === my ? 'Subastas' : 'Pides'} ${v.bids[my]}`, cls: v.auctionWinner === my ? 'gold' : '' });
+    }
+    if (v.phase === 'playing' || v.phase === 'trickDone' || v.phase === 'handEnd') myTags.push({ html: `Llevas ${v.tricks[my]}`, cls: v.tricks[my] === v.bids[my] ? 'gold' : 'dark' });
     myTags.push({ html: `${v.scores[my]} pts`, cls: 'dark' });
     if (my === v.dealer) myTags.push({ html: 'Repartes', cls: 'dark' });
     const ctr = $('#controls');
     ctr.appendChild(meTag({ turn: v.turn === my, tags: myTags }));
 
-    if (v.phase === 'bidding') {
+    if (v.phase === 'auction') {
       if (v.turn === my) {
-        ctr.appendChild(h('div', 'hint', '¿Cuántas bazas vas a hacer?'));
+        ctr.appendChild(h('div', 'hint', A.reduced ? `¿Te pides ${A.min}? El primero que diga sí se lo queda` : '¿Cuántas bazas subastas? (el que más se pida elige triunfo)'));
+        const bb = h('div', 'bid-buttons');
+        v.auctionOptions.forEach((k) => {
+          const b = h('button', 'btn primary', String(k));
+          b.onclick = () => emit('action', { type: 'auctionBid', value: k });
+          bb.appendChild(b);
+        });
+        const p = h('button', 'btn light', 'Paso');
+        p.onclick = () => emit('action', { type: 'auctionPass' });
+        bb.appendChild(p);
+        ctr.appendChild(bb);
+      } else {
+        ctr.appendChild(h('div', 'hint', `Subasta: habla ${esc(pname(v.turn))}…`));
+      }
+    } else if (v.phase === 'chooseTrump') {
+      if (v.turn === my) {
+        ctr.appendChild(h('div', 'hint', `Te has llevado la subasta con ${v.bids[my]}: elige el triunfo`));
+        const sb = h('div', 'suit-buttons');
+        ['oros', 'copas', 'espadas', 'bastos'].forEach((s) => {
+          const b = h('button', 'btn light', `${Cards.suitIcon(s, 22)} ${SUIT_NAMES[s]}`);
+          b.onclick = () => emit('action', { type: 'trump', suit: s });
+          sb.appendChild(b);
+        });
+        ctr.appendChild(sb);
+      } else {
+        ctr.appendChild(h('div', 'hint', `${esc(pname(v.turn))} se ha llevado la subasta con ${v.bids[v.turn]} y está eligiendo triunfo…`));
+      }
+    } else if (v.phase === 'bidding') {
+      if (v.turn === my) {
+        const last = v.bidOrder[v.bidOrder.length - 1] === my;
+        ctr.appendChild(h('div', 'hint', v.handType === 'indio' ? 'Indio: ¿cuántas bazas harás? (tu carta no la ves)' : '¿Cuántas bazas vas a hacer?'));
         const bb = h('div', 'bid-buttons');
         for (let k = 0; k <= v.cards; k++) {
           const b = h('button', 'btn primary', String(k));
-          if (v.forbiddenBid === k) { b.disabled = true; b.title = 'Como repartes, la suma no puede cuadrar'; }
+          if (last && v.forbiddenBid === k) { b.disabled = true; b.title = 'Eres el último en pedirte: la suma no puede cuadrar'; }
           b.onclick = () => emit('action', { type: 'bid', value: k });
           bb.appendChild(b);
         }
         ctr.appendChild(bb);
       } else {
-        ctr.appendChild(h('div', 'hint', `Apuesta ${esc(pname(v.turn))}…`));
+        ctr.appendChild(h('div', 'hint', `Se pide ${esc(pname(v.turn))}…`));
       }
     } else if (v.phase === 'playing') {
-      ctr.appendChild(h('div', 'hint', v.turn === my ? 'Tu turno: juega una carta' : `Juega ${esc(pname(v.turn))}…`));
+      const mine = v.handType === 'indio' ? 'Tu turno: juega tu carta (sin verla)' : 'Tu turno: juega una carta';
+      ctr.appendChild(h('div', 'hint', v.turn === my ? mine : `Juega ${esc(pname(v.turn))}…`));
     }
 
     const hand = $('#my-hand');
+    const myTurnPlay = v.phase === 'playing' && v.turn === my;
     v.myHand.forEach((card) => {
       const legal = v.legal.includes(card.id);
-      const myTurnPlay = v.phase === 'playing' && v.turn === my;
-      const e = Cards.face(card, myTurnPlay ? (legal ? 'playable' : 'dim') : '');
+      const cls = myTurnPlay ? (legal ? 'playable' : 'dim') : '';
+      const e = card.hidden ? Cards.back(cls) : Cards.face(card, cls);
       if (myTurnPlay && legal) e.onclick = () => emit('action', { type: 'play', card: card.id });
       hand.appendChild(e);
     });
@@ -521,6 +677,15 @@
     const my = room.mySeat;
     const myTeam = my % 2;
     const teamName = (t) => (t === myTeam ? 'Nosotros' : 'Ellos');
+    if (v.phase === 'draw') {
+      $('#info').innerHTML = '<span class="pill">Sorteo de parejas</span>';
+      for (let s = 0; s < 4; s++) if (s !== my) seatEl(s, 4, {});
+      // Tras el sorteo: asientos 1 y 3 son los del rey (1 es mano), 0 reparte
+      renderDraw(v.draw, `Parejas: <b>${esc(pname(1))} y ${esc(pname(3))}</b> contra <b>${esc(pname(0))} y ${esc(pname(2))}</b>.
+        Reparte ${esc(pname(0))}, es mano ${esc(pname(1))}`);
+      $('#controls').appendChild(meTag({}));
+      return;
+    }
     const coins = (n) => `<span class="coins">${'<span class="coin"></span>'.repeat(Math.min(8, Math.floor(n / 5)))}</span>`;
     const lanceIdx = v.lance ? LANCES.indexOf(v.lance === 'punto' ? 'juego' : v.lance) : -1;
     $('#info').innerHTML = `
@@ -655,7 +820,7 @@
       html = finishedHtml(v);
     } else if (v.game === 'pocha' && v.phase === 'handEnd') {
       const last = v.history[v.history.length - 1];
-      html = `<div class="dialog"><h2>Fin de la mano ${v.history.length} (${last.cards} carta${last.cards > 1 ? 's' : ''})</h2>
+      html = `<div class="dialog"><h2>Fin de la mano ${v.history.length} (${handLabel(last.type, last.cards)}${last.type === 'subasta' ? ` de ${esc(pname(last.auctionWinner))}` : ''})</h2>
         <table class="stat-table"><thead><tr><th>Jugador</th><th>Pidió</th><th>Hizo</th><th>Puntos</th><th>Total</th></tr></thead><tbody>
         ${room.players.map((p, s) => `<tr><td class="name">${avatarHtml(p.avatar, 'sm')}${esc(p.name)}</td><td>${last.bids[s]}</td><td>${last.tricks[s]}</td>
           <td style="color:${last.points[s] >= 0 ? '#2b8a3e' : '#c0392b'};font-weight:700">${last.points[s] > 0 ? '+' : ''}${last.points[s]}</td><td><b>${last.totals[s]}</b></td></tr>`).join('')}
@@ -736,8 +901,8 @@
     if (v.game === 'pocha') {
       const ps = room.players;
       body.innerHTML = `<table><thead><tr><th>Cartas</th>${ps.map((p) => `<th>${esc(p.name)}</th>`).join('')}</tr></thead><tbody>
-        ${v.history.map((hst) => `<tr><td>${hst.cards} ${Cards.suitIcon(hst.trump, 12)}</td>${ps.map((p, s) => `<td class="${hst.bids[s] === hst.tricks[s] ? 'ok' : 'ko'}" title="Pidió ${hst.bids[s]}, hizo ${hst.tricks[s]}">${hst.totals[s]}<br><small>${hst.bids[s]}/${hst.tricks[s]}</small></td>`).join('')}</tr>`).join('')}
-        ${v.sequence.slice(v.history.length).map((cards) => `<tr><td>${cards}</td>${ps.map(() => '<td>·</td>').join('')}</tr>`).join('')}
+        ${v.history.map((hst) => `<tr><td>${handLabel(hst.type, hst.cards)} ${hst.trump ? Cards.suitIcon(hst.trump, 12) : ''}</td>${ps.map((p, s) => `<td class="${hst.bids[s] === hst.tricks[s] ? 'ok' : 'ko'}" title="Pidió ${hst.bids[s]}, hizo ${hst.tricks[s]}">${hst.totals[s]}<br><small>${hst.bids[s]}/${hst.tricks[s]}</small></td>`).join('')}</tr>`).join('')}
+        ${v.sequence.slice(v.history.length).map((x) => `<tr><td>${handLabel(x.type, x.cards)}</td>${ps.map(() => '<td>·</td>').join('')}</tr>`).join('')}
         </tbody></table>`;
     } else {
       const myTeam = room.mySeat % 2;
@@ -753,11 +918,12 @@
 
   // ---------- arranque ----------
   drawArt();
-  renderLogin();
+  renderLogin(true);
   if (me.name) {
     show('menu');
     socket.connect();
   } else {
     show('login');
+    loadKnown();
   }
 })();
